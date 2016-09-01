@@ -1,0 +1,87 @@
+# export PATH=$PATH:/opt/android/standalone-toolchain/gcc-4.9-android-18/bin
+#import boost ; 
+#boost.use-project 1.59 ; 
+
+import os ;
+path-constant HOME : [ os.environ HOME ] ;
+path-constant BOOST_ROOT : /opt/BOOST_ROOT ; #: [ os.environ BOOST_ROOT ] ;
+
+use-project boost : $(BOOST_ROOT) ; # /boost//headers
+
+#using clang : : : <cxxflags>-std=c++1y <cxxflags>"-stdlib=libc++" <linkflags>"-stdlib=libc++" ;
+#using gcc : : : <cxxflags>-std=c++1y ;
+
+# ./bjam --build-type=complete --layout=tagged
+#  variant=debug|release            Select the build variant
+#  link=static|shared                    Whether to build static or shared libraries
+#  threading=single|multi            Whether to build single or multithreaded binaries
+#  runtime-link=static|shared      Whether to link to static or shared C and C++ runtime.
+
+
+# path-constant NDK : /opt/android-ndk ;
+
+#path-constant TOOLCHAIN : /opt/android/standalone-toolchain/gcc-4.9-android-18 ;
+path-constant BIN : gcc-4.9-android-18/bin ;
+path-constant SYSROOT : gcc-4.9-android-18/sysroot ;
+
+using gcc : : $(BIN)/arm-linux-androideabi-g++
+  : <archiver>$(BIN)/arm-linux-androideabi-ar
+    <architecture>arm
+    <compileflags>-fexceptions
+    <compileflags>-fPIE
+    <linkflags>-fPIE
+    <linkflags>-pie
+    <compileflags>-fpic
+    <compileflags>-ffunction-sections
+    <compileflags>-funwind-tables
+    <compileflags>-D__ARM_ARCH_5__
+    <compileflags>-D__ARM_ARCH_5T__
+    <compileflags>-D__ARM_ARCH_5E__
+    <compileflags>-D__ARM_ARCH_5TE__
+    <compileflags>-Wno-psabi
+    <compileflags>-march=armv5te
+    <compileflags>-mtune=xscale
+    <compileflags>-msoft-float
+    <compileflags>-mthumb
+    <compileflags>-Os
+    <compileflags>-O2
+    <compileflags>-fomit-frame-pointer
+    <compileflags>-fno-strict-aliasing
+    <compileflags>-finline-limit=64
+    <compileflags>-Wa,--noexecstack
+    <compileflags>-DANDROID
+    <compileflags>-DNDEBUG
+    #<compileflags>-g
+        #<compileflags>-I$(NDK)/platforms/android-12/arch-arm/usr/include
+        #<compileflags>-I$(NDK)/sources/cxx-stl/gnu-libstdc++/4.9/include
+        #<compileflags>-I$(NDK)/sources/cxx-stl/gnu-libstdc++/4.9/libs/armeabi/include
+    # @Moss - Above are the 'oficial' android flags
+    <compileflags>--sysroot=$(SYSROOT)
+    <compileflags>-fdata-sections
+    <cxxflags>-frtti
+    <cxxflags>-fvisibility=hidden
+    <cxxflags>-fvisibility-inlines-hidden
+    <cxxflags>-D__arm__
+    <cxxflags>-D_REENTRANT
+    <cxxflags>-D_GLIBCXX__PTHREADS
+    <cxxflags>-std=c++11
+    ;
+
+# ./bjam --build-type=complete --layout=tagged
+#  variant=debug|release            Select the build variant
+#  link=static|shared                    Whether to build static or shared libraries
+#  threading=single|multi            Whether to build single or multithreaded binaries
+#  runtime-link=static|shared      Whether to link to static or shared C and C++ runtime.
+
+### http://developer.android.com/ndk/guides/standalone_toolchain.html
+### clang
+# export NDK=/opt/android-ndk-r10c
+# export SYSROOT=$NDK/platforms/android-21/arch-arm
+#
+# $NDK/toolchains/llvm-3.5/prebuilt/linux-x86/bin/clang --sysroot=$SYSROOT \
+#   -target armv7-none-linux-androideabi -gcc-toolchain $NDK/toolchains/arm-linux-androideabi-4.8/prebuilt/linux-x86 \
+#   -c hello-jni.c
+#
+#   -target i686-none-linux-android
+#
+

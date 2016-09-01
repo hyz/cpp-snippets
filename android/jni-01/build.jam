@@ -1,0 +1,45 @@
+project android-boost-sample
+    : requirements
+        <include>$(BOOST_ROOT)
+        <threading>multi
+    : default-build release
+    ;
+lib rt : librt-empty.c : <link>static ;
+
+exe multi : multi_index-employee.cpp : <link>static ;
+exe hcli : async_http_client.cpp /boost//system : <link>static  ;
+exe chats : chat_server.cpp /boost//system : <link>static  ;
+exe chatc : chat_client.cpp /boost//system /boost//thread : <link>static  ;
+lib hello-jni : hello-jni.c ; #: <link>static ;
+
+lib log ; # android log
+alias boostlibs : /boost//system /boost//chrono : <link>static ;
+
+lib hgs
+    : hgs-rtph264.cpp hgs-jni.cpp log boostlibs
+        #/boost//system/<link>static /boost//chrono/<link>static 
+        VideoRender.cpp
+    ;
+obj jni1 : hgs-jni.cpp : <define>HGS_TEST_BUILD ;
+lib hgs1 : hgs-rtph264.cpp jni1 log boostlibs
+    ;
+
+#
+#define BOOST_CHRONO_HEADER_ONLY
+#define BOOST_ERROR_CODE_HEADER_ONLY
+# context coroutine thread
+#lib rtsp_cli : rtsp_cli.cpp # hgs-jni.cpp 
+#        /boost//system/<link>static /boost//chrono/<link>static 
+#        context coroutine thread
+#        log
+#    ;
+#
+# exe test-link : dummy-main.cc hgs log ;
+#
+#install bin/a : multi hcli chats chatc ;
+
+path-constant DESTDIR : /mnt/hgfs/home/eclipse/BarCode_release_apk/jni/armeabi-v7a ;
+install $(DESTDIR) : hgs ;
+path-constant DESTDIR : /mnt/hgfs/home/and/SimpleH264Decoder/Application/src/main/jniLibs/armeabi-v7a ;
+install $(DESTDIR) : hgs1 ;
+

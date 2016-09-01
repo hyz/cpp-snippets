@@ -1,0 +1,35 @@
+project gm_lib_ex1
+    : requirements
+        <include>$(BOOST_ROOT)
+        <threading>multi
+    : default-build release
+    ;
+#lib rt : librt-empty.c : <link>static ;
+
+exe a : demo.cpp gm_lib/lib/libgm.a : <include>gm_lib/inc <link>static <runtime-link>static ;
+exe t : t.cpp : <link>static <runtime-link>static ;
+
+#exe multi : multi_index-employee.cpp : <link>static ;
+#exe hcli : async_http_client.cpp /boost//system : <link>static  ;
+#exe bw2 : test-bandwidth2.cpp : <link>static <runtime-link>static ;
+#exe chatc : chat_client.cpp /boost//system /boost//thread : <link>static  ;
+
+#lib hello-jni : hello-jni.c ; #: <link>static ;
+#lib log ; # android log
+
+#lib hgs : hgs-rtph264.cpp hgs-jni.c 
+#        /opt/boost_1_60_0/libs/system/src/error_code.cpp
+#        # context coroutine thread
+#        log
+#    ;
+
+#lib rtsp_cli : rtsp_cli.cpp # hgs-jni.c 
+#        /opt/boost_1_60_0/libs/system/src/error_code.cpp
+#        context coroutine thread
+#        log
+#    ;
+#
+# exe test-link : dummy-main.cc hgs log ;
+#
+install bin : a t ;
+
