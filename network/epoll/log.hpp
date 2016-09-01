@@ -28,7 +28,7 @@ inline int ERR_MSG(char const*fmt, ...)
     va_start(ap, fmt);
     n = vfprintf(stderr, fmt, ap);
     va_end(ap);
-    return n + fprintf(stderr, ": %s\n", strerror(err));
+    return n + fprintf(stderr, ": %s\n", err?strerror(err):"");
 }
 inline void ERR_EXIT(char const*fmt, ...)
 {
@@ -37,7 +37,7 @@ inline void ERR_EXIT(char const*fmt, ...)
     va_start(ap, fmt);
     n = vfprintf(stderr, fmt, ap);
     va_end(ap);
-    n += fprintf(stderr, ": %s\n", strerror(err));
+    n += fprintf(stderr, ": %s\n", err?strerror(err):"");
     exit(127);
 }
 #endif // else // !(ANDROID)
