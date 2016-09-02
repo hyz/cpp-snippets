@@ -16,7 +16,7 @@ struct buffer_ref : boost::iterator_range<char*>
     range spaces() const { return boost::iterator_range<char*>(end(), end_); }
 
     void commit(range& sub, unsigned len) {
-        if (sub.begin() != end() || len > size_fr(end())) {
+        if (sub.begin() != end() || len > size_fr(end()) || sub.size() != size_fr(end())) {
             ERR_EXIT("buffer_ref:commit %u", len);
         }
         advance_end(len); // cur_ += len;
@@ -141,7 +141,8 @@ struct buffer_list_fix
     }
 
     iterator find_(unsigned xe, iterator b2) {
-        ++b2;
+        if (++b2 >= end())
+            b2 = begin();
         iterator end2 = b2+size();
         for (; b2 < end2; ++b2) {
             iterator b = &bufs_[ (b2-begin()) % size()];

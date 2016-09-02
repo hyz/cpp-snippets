@@ -16,8 +16,9 @@
 #include "buffer.hpp"
 
 enum { BITSTREAM_LEN  = (1920 * 1080 * 3 / 2) }; // (720 * 576 * 3 / 2)
-typedef buffer_list_fix<BITSTREAM_LEN> buffer_list;
+//typedef buffer_list_fix<BITSTREAM_LEN> buffer_list;
 
+template <typename buffer_list>
 struct Encoder : boost::noncopyable
 {
     enum { MAX_BITSTREAM_NUM = 1 };
@@ -29,16 +30,16 @@ struct Encoder : boost::noncopyable
     enum { cch_ = 0 }; //cch_ = 0; // use capture virtual channel 0
 
     buffer_list& buflis;
-    //FILE *record_file;
+    FILE *record_file;
 
     ~Encoder() {
         gm_delete_obj(encode_object);
         gm_delete_obj(capture_object);
         gm_release();
-        //fclose(record_file);
+        /// fclose(record_file);
     }
 
-    Encoder(buffer_list& lis)
+    Encoder(buffer_list& lis, FILE* recfile=0)
         : thread(*this, "Encoder")
         , buflis(lis)
     {
@@ -69,17 +70,9 @@ struct Encoder : boost::noncopyable
         h264e_attr.enable_mv_data = 0;  // disable H.264 motion data output
         gm_set_attr(encode_object, &h264e_attr);
 
-        //record_file = stdout; //fopen(filename, "wb");
-        //char filename[50];
-        //sprintf(filename, "ch%d_%dx%d_force.264", cch_
-        //        , gm_system.cap[cch_].dim.width, gm_system.cap[cch_].dim.height);
-        //fopen(filename, "wb");
-        //if (record_file == NULL) {
-        //    ERR_EXIT("open '%s' error", filename);
-        //}
+        record_file = recfile; //stdout; //fopen(filename, "wb");
     }
-    void run(){} // test TODO
-    void run1() // thread func
+    void run() // thread func
     {
         void *groupfd = gm_new_groupfd(); // create new record group fd (??ȡgroupfd)
         void *bindfd = gm_bind(groupfd, capture_object, encode_object);
@@ -89,7 +82,7 @@ struct Encoder : boost::noncopyable
 
         gm_pollfd_t poll_fds[MAX_BITSTREAM_NUM];
         gm_enc_multi_bitstream_t multi_bs[MAX_BITSTREAM_NUM];
-        buffer_list::iterator bufs[MAX_BITSTREAM_NUM];
+        typename buffer_list::iterator bufs[MAX_BITSTREAM_NUM];
 
         memset(poll_fds, 0, sizeof(poll_fds));
         for (int i = 0; i < MAX_BITSTREAM_NUM; i++) {
@@ -130,14 +123,16 @@ struct Encoder : boost::noncopyable
                     if ((multi_bs[i].retval < 0) && multi_bs[i].bindfd) {
                         ERR_MSG("CH%d Error to receive bitstream. ret=%d", i, multi_bs[i].retval);
                     } else if (multi_bs[i].retval == GM_SUCCESS) {
-                        bufs[i]->commit(multi_bs[i].bs.bs_len);
+                        bufs[i]->commit(*bufs[i], multi_bs[i].bs.bs_len);
                         buflis.done(bufs[i]);
                         bufs[i] = buflis.alloc(bufs[i]);
                         DEBUG("<CH%d, mv_len=%d bs_len=%d, keyframe=%d, newbsflag=0x%x>",
                                 i, multi_bs[i].bs.mv_len, multi_bs[i].bs.bs_len,
                                 multi_bs[i].bs.keyframe, multi_bs[i].bs.newbs_flag);
-                        //fwrite(multi_bs[i].bs.bs_buf, 1, multi_bs[i].bs.bs_len, record_file);
-                        //fflush(record_file);
+                        if (record_file) {
+                            fwrite(multi_bs[i].bs.bs_buf, 1, multi_bs[i].bs.bs_len, record_file);
+                            fflush(record_file);
+                        }
                     }
                 }
             }

@@ -17,176 +17,267 @@
 #include "thread.hpp"
 #include "buffer.hpp"
 
-template <typename buffer_list>
-struct EPollContext
+inline int nonblocking(int fd)
 {
-    typedef EPollContext<buffer_list> Context;
-
-    struct EventInterface {
-        virtual ~EventInterface() {}
-        virtual void process(EPollContext* ctx, int evts) = 0;
-    };
-
-    struct UDPMain : EventInterface {
-        enum { LOCAL_PORT=5555 };
-        int fd;
-        uint32_t events;
-
-        array_buf<1024*24> recvbuf;
-
-        virtual void process(EPollContext* ctx, int evts) {
-            events = evts;
-            ctx->on_events(*this);
+    int opts = fcntl(fd, F_GETFL);
+    if(opts < 0) {
+        ERR_EXIT("fcntl %d F_GETFL", fd);
+    }
+    opts = opts | O_NONBLOCK;
+    if(fcntl(fd, F_SETFL, opts) < 0) {
+        ERR_EXIT("fcntl %d F_SETFL", fd);
+    }
+    return fd;
+}
+inline struct sockaddr_in make_sa(char const*ip, short port)
+{
+    struct sockaddr_in sa;
+    bzero(&sa, sizeof(sa));
+    sa.sin_family = AF_INET;
+    if (ip) {
+        if (inet_pton(AF_INET, ip, &sa.sin_addr) < 0) {
+            ERR_EXIT("inet_pton");
         }
+    } else {
+        sa.sin_addr.s_addr = INADDR_ANY;
+    }
+    sa.sin_port = htons(port);
+    return sa;
+}
 
-        ~UDPMain() {
-            if (fd >= 0)
-                ::close(fd);
-        }
-        UDPMain(EPollContext& ctx) {
-            fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-            if (fd < 0)
-                ERR_EXIT("init:socket SOCK_DGRAM");
-            ctx.nonblocking(fd);
-        }
+template <typename Context>
+struct EventInterface {
+    virtual ~EventInterface() {}
+    virtual void forward(Context& ctx, int evts) = 0;
+};
 
-        void connect(const char* ip, unsigned short port) {
-            struct sockaddr_in sa;
-            bzero(&sa, sizeof(sa));
-            sa.sin_family = AF_INET;
-            if (inet_pton(AF_INET, ip, &sa.sin_addr) < 0) {
-                ERR_EXIT("UDPMain:inet_pton");
-            }
-            sa.sin_port = htons(port);
-            if (::connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+template <typename XData, int Type, typename Context>
+struct EPollSocket : EventInterface<Context>, boost::noncopyable
+{
+    typedef EPollSocket<XData,Type,Context> ThisType;
+    /// EPOLLIN | EPOLLOUT | EPOLLET
+
+    ~EPollSocket() {
+        if (fd_ >= 0)
+            ::close(fd_);
+    }
+    EPollSocket() { fd_=-1; }
+    EPollSocket(XData& xd) : xdata_(xd) { fd_=-1; events_=0; }
+    EPollSocket(int xfd, XData& xd) : xdata_(xd) { fd_ = xfd; events_=0; }
+
+    XData& xdata() { return xdata_; }
+    int type() const { return Type; }
+
+    int ok(int msk) const { return (events_ & msk); } // bool
+    int fd() const { return fd_; }
+    bool is_open() const { return fd_>=0; }
+    void close() {
+        if (is_open()) {
+            ::close(fd_);
+            fd_ = -1;
+            events_ = 0;
+        }
+    }
+
+    int recv(char*p, char*end) {
+        return recv_(p,end, NULL);
+    }
+    int send(char*p, char*end) {
+        return send_(p,end, NULL, 0);
+    }
+    int recv(char*p, char*end, struct sockaddr_in& sa) {
+        return recv_(p,end, &sa);
+    }
+    int send(char*p, char*end, struct sockaddr_in& sa) {
+        return send_(p,end, &sa, sizeof(sa));
+    }
+
+    ThisType& connect(const char* ip, unsigned short port) {
+        struct sockaddr_in sa = make_sa(ip,port);
+        open()->fcntl(O_NONBLOCK, false);
+        if (::connect(fd_, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+            if (errno == EINPROGRESS) {
+                DEBUG("connecting %s:%d ...", ip, (int)port);
+            } else {
                 ERR_EXIT("connect");
             }
-            DEBUG("connect %s:%d", ip, (int)port);
+        } else {
+            DEBUG("connected %s:%d [OK]", ip, (int)port);
+            this->fcntl(O_NONBLOCK, true);
         }
-        void listen(const char* ip, unsigned short port) {
-            struct sockaddr_in sa;
-            bzero(&sa, sizeof(sa));
-            sa.sin_family = AF_INET;
-            if (ip) {
-                if (inet_pton(AF_INET, ip, &sa.sin_addr) < 0) {
-                    ERR_EXIT("UDPMain:inet_pton");
-                }
-            } else {
-                sa.sin_addr.s_addr = INADDR_ANY;
-            }
-            sa.sin_port = htons(port);
-            if (::bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-                ERR_EXIT("listen:bind");
-            }
-            DEBUG("listen %s:%d", ip ? ip : "*", (int)port);
+        return *this;
+    }
+    ThisType& bind(const char* ip, unsigned short port) {
+        struct sockaddr_in sa = make_sa(ip,port);
+        open()->fcntl(O_NONBLOCK, true);
+        if (::bind(fd_, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+            ERR_EXIT("bind");
         }
+        DEBUG("bind %s:%d", ip ? ip : "*", (int)port);
+        return *this;
+    }
+    ThisType& listen(const char* ip, unsigned short port, int backlog=128) {
+        open()->fcntl(O_NONBLOCK, true);
+        int y=1;
+        if (::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &y, sizeof(y)) < 0) {
+            ERR_EXIT("setsockopt");
+        }
+        this->bind(ip,port);
+        if (::listen(fd_, backlog) < 0) {
+            ERR_EXIT("listen");
+        }
+        return *this;
+    }
+    template <typename T>
+    bool accept(T& lisk) {
+        struct sockaddr_in sa; //struct sockaddr_in clientaddr;
+        socklen_t slen = sizeof(struct sockaddr_in);
+        int sfd = ::accept(lisk.fd(), (struct sockaddr *)&sa, &slen);
+        if (sfd < 0) {
+            if (errno == EAGAIN)
+                return false;
+            ERR_EXIT("accept: %d", sfd);
+        }
+            char cp[64]; // = {0};
+            inet_ntop(AF_INET, &sa.sin_addr, cp,64);
+            DEBUG("accept: %s", cp);
+        fd_ = nonblocking(sfd);
+        return true;
+    }
 
-        int recv_(struct sockaddr_in* sa) {
-            buffer_ref::range s = recvbuf.spaces();
-            if (s.empty() || !(events & EPOLLIN)) {
-                ERR_EXIT("recv error: %u %d", s.size(), int(events & EPOLLIN));
+private:
+    int fd_;
+    uint32_t events_;
+    XData xdata_; //array_buf<bufsiz> xdata_;
+
+    virtual void forward(Context& ctx, int evts) {
+        events_ = evts;
+        //DEBUG("forward events %x, %d", evts, (int)ok(EPOLLOUT));
+        ctx.on_events(*this);
+    }
+
+    ThisType* open() {
+        if (is_open()) {
+            return this;
+        }
+        int sfd = ::socket(AF_INET, Type, 0);
+        if (sfd < 0)
+            ERR_EXIT("socket:SOCK_DGRAM");
+        fd_ = sfd; //nonblocking(sfd);
+        return this;
+    }
+    int recv_(char*p, char*end, struct sockaddr_in* sa) {
+        //buffer_ref::range s = recvbuf_.spaces();
+        if (p>=end || !ok(EPOLLIN)) {
+            ERR_EXIT("recv error: %d %d", int(end-p), int(events_ & EPOLLIN));
+        }
+        socklen_t slen = sizeof(struct sockaddr_in);
+        int n = ::recvfrom(fd_, p, end-p, 0, (struct sockaddr*)sa, sa?&slen:NULL);
+        if (n <= 0) //(n < (int)s.size())
+            events_ &= ~EPOLLIN;
+        if (n < 0) {
+            if (errno == EAGAIN) {
+                return 0;
             }
-            socklen_t slen = sizeof(struct sockaddr_in);
-            int n = ::recvfrom(fd, s.begin(), s.size(), 0, (struct sockaddr*)sa, sa?&slen:NULL);
-            // if (n < (int)s.size()) events &= ~EPOLLIN;
-            if (n < 0) {
-                if (errno == EAGAIN) {
-            events &= ~EPOLLIN;
-                    return 0;
-                }
-                ERR_MSG("recv");
-                return n;
-            }
-            if (n == 0) {
-                return -(errno = EPIPE);
-            }
-            recvbuf.commit(s, n);
+            ERR_MSG("recv");
             return n;
         }
-        int recv(struct sockaddr_in& sa) {
-            return recv_(&sa);
+        if (n == 0) {
+            return -int(errno = EPIPE);
         }
-        int recv() {
-            return recv_(NULL);
+        //recvbuf_.commit(s, n);
+        return n;
+    }
+    int send_(char* p, char* end, struct sockaddr_in* sa, socklen_t slen) {
+        if (p>=end || !ok(EPOLLOUT)) {
+            ERR_EXIT("send error: %d %d", int(end-p), int(events_ & EPOLLOUT));
         }
-
-        int send_(buffer_ref& buf, struct sockaddr_in* sa, socklen_t slen) {
-            if (buf.empty() || !(events & EPOLLOUT)) {
-                ERR_EXIT("send error: %u %d", buf.size(), int(events & EPOLLOUT));
-            }
-            int n = ::sendto(fd, buf.begin(), buf.size(), 0, (struct sockaddr*)sa, slen);
-            if (n < (int)buf.size())
-                events &= ~EPOLLOUT;
-            if (n < 0) {
-                if (errno == EAGAIN)
-                    return 0;
-                ERR_MSG("send");
-                return n;
-            }
-            buf.consume(n);
+        enum { MTU=1500-64 };
+        int xlen = std::min(int(MTU), int(end-p));
+        int n = ::sendto(fd_, p, xlen, 0, (struct sockaddr*)sa, slen);
+        if (n < xlen)
+            events_ &= ~EPOLLOUT;
+        if (n < 0) {
+            if (errno == EAGAIN)
+                return 0;
+            ERR_MSG("send");
             return n;
         }
-        int send(buffer_ref& buf, struct sockaddr_in& sa) {
-            return send_(buf, &sa, sizeof(sa));
+        // buf.consume(n);
+        return n;
+    }
+
+    ThisType* fcntl(int msk, bool yn)
+    {
+        int opts = ::fcntl(fd_, F_GETFL);
+        if (opts < 0) {
+            ERR_EXIT("fcntl %d F_GETFL", fd_);
         }
-        int send(buffer_ref& buf) {
-            return send_(buf, NULL, 0);
+        int prevopts = opts;
+        if (yn) {
+            opts |= msk; // | O_NONBLOCK;
+        } else {
+            opts &= ~msk;
         }
-        //int send(char* p, char* end) {
-        //    int nbytes = int(end - p);
-        //    if (p <= end || !(events & EPOLLOUT)) {
-        //        ERR_EXIT("send error: %d %d", nbytes, int(events & EPOLLOUT));
-        //    }
-        //    int n = ::send(fd, p, nbytes, 0);
-        //    if (n < nbytes)
-        //        events &= ~EPOLLOUT;
-        //    if (n < 0) {
-        //        if (errno == EAGAIN)
-        //            return 0;
-        //        ERR_MSG("send");
-        //    }
-        //    return n;
-        //}
-        void close() {
-            if (fd >= 0) {
-                ::close(fd);
-                fd = -1;
+        if (opts != prevopts) {
+            if(::fcntl(fd_, F_SETFL, opts) < 0) {
+                ERR_EXIT("fcntl %d F_SETFL", fd_);
             }
         }
-    };
+        return this;
+    }
+};
 
+template <typename buffer_list>
+struct NetworkIO : boost::noncopyable
+{
+    typedef NetworkIO<buffer_list> Context;
+    typedef array_buf<1024*24-64> Recvbuffer;
+    typedef EPollSocket<Recvbuffer,SOCK_DGRAM ,Context> DatagramSocket;
+    typedef EPollSocket<Recvbuffer,SOCK_STREAM,Context> StreamSocket;
+    typedef EPollSocket<int       ,SOCK_STREAM,Context> ListenSocket;
+
+    Thread<NetworkIO> thread;
     buffer_list& buflis;
     int epfd;
-    UDPMain umain;
-    Thread<EPollContext> thread;
+    DatagramSocket udp_;
+    StreamSocket tcp_;
+    ListenSocket lisk_;
 
     typename buffer_list::iterator iter_; // = buflis.end();
     //std::map<uint64_t> pids_; //std::vector<struct sockaddr_in> peers_;
     struct sockaddr_in sa_peer_;
 
-    ~EPollContext() {
-        do_close(umain);
+    ~NetworkIO() {
+        do_close(udp_);
         ::close(epfd);
     }
 
-    EPollContext(buffer_list& lis, char const* connect_ip = 0, short port=9990)
-        : buflis(lis)
+    NetworkIO(buffer_list& lis, char const* connect_ip = 0, short port=9990)
+        : thread(*this, "NetworkIO")
+        , buflis(lis)
         , epfd(this->epoll_create())
-        , umain(*this)
-        , thread(*this, "EPollContext")
+        , udp_()
+        , tcp_()
     {
+        iter_ = buflis.end();
+#if 0
         if (connect_ip) {
-            // umain.connect(connect_ip, port);
-            bzero(&sa_peer_, sizeof(sa_peer_));
-            sa_peer_.sin_family = AF_INET;
-            inet_pton(AF_INET, connect_ip, &sa_peer_.sin_addr);
-            sa_peer_.sin_port = htons(port);
+            //udp_.connect(connect_ip, port);
+            sa_peer_ = make_sa(connect_ip, port);
         } else {
-            umain.listen(NULL, port);
+            udp_.bind(NULL, port);
             bzero(&sa_peer_, sizeof(sa_peer_));
         }
-        iter_ = buflis.end();
-        epoll_add(umain.fd, EPOLLIN|EPOLLOUT, &umain);
+        epoll_add(udp_, EPOLLIN|EPOLLOUT);
+#endif
+        if (connect_ip) {
+            tcp_.connect(connect_ip, port);
+            epoll_add(tcp_, EPOLLIN|EPOLLOUT);
+        } else {
+            lisk_.listen(connect_ip, port);
+            epoll_add(lisk_, EPOLLIN);
+        }
     }
 
     void run() // thread func
@@ -196,7 +287,7 @@ struct EPollContext
                 iter_ = buflis.wait(10);
             }
             if (iter_ != buflis.end()) {
-                do_send(umain); // do_recv(umain);
+                do_send(tcp_); // do_recv(udp_);
             }
 
             struct epoll_event evts[16];
@@ -206,120 +297,114 @@ struct EPollContext
             }
 
             for (int i = 0; i < nready; ++i) {
-                EventInterface* xif = static_cast<EventInterface*>(evts[i].data.ptr);
-                xif->process(this, evts[i].events);
+                EventInterface<Context>* xif = static_cast<EventInterface<Context>*>(evts[i].data.ptr);
+                xif->forward(*this, evts[i].events);
             }
         }
     }
 
-    void on_events(UDPMain& um)
+    template <typename Sock> void on_events(Sock& sk)
     {
-        if (um.events & EPOLLIN) {
-            return do_recv(um);
+        if (sk.ok(EPOLLIN)) {
+            return do_recv(sk);
         }
-        if (um.events & EPOLLOUT) {
-            return do_send(um);
+        if (sk.ok(EPOLLOUT)) {
+            DEBUG("EPOLLOUT");
+            return do_send(sk);
         }
-        //if (events[i].data.ptr == 0) { // listen socket
-        //    DEBUG("accept connection, fd is %d", mysock);
-        //    struct sockaddr_in sa; //struct sockaddr_in clientaddr;
-        //    socklen_t slen;
-        //    int sfd = accept(mysock, (struct sockaddr *)&sa, &slen);
-        //    if (sfd < 0) {
-        //        ERR_EXIT("sfd < 0");
-        //    }
-        //    nonblocking(sfd);
-        //    DEBUG("connect from %s", inet_ntoa(sa.sin_addr));
-        //    struct epoll_event ev;
-        //    ev.data.fd = sfd;
-        //    ev.events = EPOLLIN; // | EPOLLET;
-        //    epoll_ctl(epfd, EPOLL_CTL_ADD, sfd, &ev);
-        //}
     }
-    void on_error(UDPMain& um, int ec) {
-        ERR_EXIT("UDPMain %d error", um.fd);
-        do_close(um);
+    template <typename Sock> void error(Sock& sk, int ec) {
+        ERR_MSG("error %d", sk.fd());
+        do_close(sk);
     }
 
-    void do_close(UDPMain& um) {
-        if (um.fd >= 0) {
-            epoll_del(um.fd);
-            um.close();
+    template <typename Sock> void do_close(Sock& sk) {
+        if (sk.is_open()) {
+            epoll_del(sk);
+            sk.close();
         }
-        //ERR_MSG("UDPMain %d closed", um.fd);
+        //ERR_MSG("Socket %d closed", sk.fd());
     }
 
-    void do_recv(UDPMain& um)
+    template <typename Sock> void do_recv(Sock& sk)
     {
-        // struct sockaddr_in sa;
-        int n;
-        while ((um.events & EPOLLIN) && (n = um.recv(sa_peer_)) > 0) {
-            char* p = um.recvbuf.begin();
-            fwrite(p, um.recvbuf.size(), 1, stdout);
-            um.recvbuf.consume(um.recvbuf.size());
+        while (sk.ok(EPOLLIN)) {
+            Recvbuffer& buf = sk.xdata();
+            Recvbuffer::range sp = buf.spaces();
+            int n = sk.recv(sp.begin(), sp.end());//(, sa_peer_);
+            if (n < 0) {
+                return error(sk, errno);
+            }
+            if (n > 0) {
+                fwrite(sp.begin(), n, 1, stdout);
+                //buf.consume(buf.size());
+            }
         }
-
-        if (n < 0) {
-            return on_error(um, errno);
-        }
-        //DEBUG("received data: %s", line);
-        //struct epoll_event ev;
-        //ev.data.fd = sockfd;
-        //ev.events = EPOLLOUT; // | EPOLLET;
-        //epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &ev);
     }
-    void do_send(UDPMain& um)
+    template <typename Sock> void do_send(Sock& sk)
     {
-        if (sa_peer_.sin_port == 0) {
+        if (sk.type() == SOCK_DGRAM && sa_peer_.sin_port == 0) {
             return;
         }
-        while ((um.events & EPOLLOUT) && iter_ != buflis.end()) {
-            int n = um.send(*iter_, sa_peer_); //(iter_->begin(), iter_->end());
+        if (sk.type() == SOCK_STREAM) {
+            //if (sk.state() == EConnecting) {
+            //    int y;
+            //    if (::getsockopt(lisk.fd(), SOL_SOCKET, SO_ERROR, &y, sizeof(y)) < 0) {
+            //        ERR_EXIT("getsockopt");
+            //    }
+            //    if (y != 0) {
+            //        return error(sk); //ERR_EXIT("getsockopt SO_ERROR %d", y);
+            //    }
+            //}
+        }
+
+        while (sk.ok(EPOLLOUT) && iter_ != buflis.end()) {
+            int n = sk.send(iter_->begin(), iter_->end());//(sa_peer_);
             if (n < 0) {
-                return on_error(um, errno);
+                return error(sk, errno);
             }
+            iter_->consume(n);
             if (iter_->empty()) {
                 buflis.done(iter_);
                 iter_ = buflis.end();
             }
         }
-            //struct epoll_event ev;
-            //ev.data.fd = sockfd;
-            //ev.events = EPOLLIN; // | EPOLLET;
-            //epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &ev);
     }
 
+    void do_recv(ListenSocket& lisk)
+    {
+        if (tcp_.is_open()) {
+            DEBUG("only-one-accepted");
+            return;
+        }
+        if (tcp_.accept(lisk))
+            epoll_add(tcp_, EPOLLIN|EPOLLOUT);
+    }
+    void do_send(ListenSocket& lisk) {}
+
+    // EPOLL_CTL_MOD
     template <typename T>
-    void epoll_add(int fd, int evts, T* xptr) {
+    void epoll_add(T& sk, int evts) {
         struct epoll_event ev;
-        ev.data.ptr = static_cast<void*>(xptr);
+        ev.data.ptr = static_cast<void*>(&sk);
         ev.events = evts|EPOLLET; //EPOLLIN|EPOLLOUT | EPOLLET;
-        if (::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) < 0)
+        if (::epoll_ctl(epfd, EPOLL_CTL_ADD, sk.fd(), &ev) < 0)
             ERR_EXIT("init:epoll_ctl");
     }
-    void epoll_del(int fd) {
+    template <typename T>
+    void epoll_del(T& sk) {
         struct epoll_event ev;
-        if (epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &ev) < 0)
+        if (epoll_ctl(epfd, EPOLL_CTL_DEL, sk.fd(), &ev) < 0)
             ERR_EXIT("deinit:epoll_ctl");
     }
 
     static int epoll_create() {
         int fd = ::epoll_create(16);
-        if (fd  < 0)
+        if (fd < 0)
             ERR_EXIT(":epoll_create");
         return fd;
     }
 
-    static void nonblocking(int fd) {
-        int opts = fcntl(fd, F_GETFL);
-        if(opts < 0) {
-            ERR_EXIT("fcntl %d F_GETFL", fd);
-        }
-        opts = opts | O_NONBLOCK;
-        if(fcntl(fd, F_SETFL, opts) < 0) {
-            ERR_EXIT("fcntl %d F_SETFL", fd);
-        }
-    }
 };
 
 #endif // EPOLL_HPP__
