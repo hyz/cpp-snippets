@@ -82,23 +82,25 @@ struct EPollContext
         }
 
         int recv_(struct sockaddr_in* sa) {
-            if (recvbuf.empty(0) || !(events & EPOLLIN)) {
-                ERR_EXIT("recv error: %u %d", recvbuf.size(0), int(events & EPOLLIN));
+            buffer_ref::range s = recvbuf.spaces();
+            if (s.empty() || !(events & EPOLLIN)) {
+                ERR_EXIT("recv error: %u %d", s.size(), int(events & EPOLLIN));
             }
             socklen_t slen = sizeof(struct sockaddr_in);
-            int n = ::recvfrom(fd, recvbuf.begin(0), recvbuf.size(0), 0, (struct sockaddr*)sa, sa?&slen:NULL);
-            if (n < (int)recvbuf.size(0))
-                events &= ~EPOLLIN;
+            int n = ::recvfrom(fd, s.begin(), s.size(), 0, (struct sockaddr*)sa, sa?&slen:NULL);
+            // if (n < (int)s.size()) events &= ~EPOLLIN;
             if (n < 0) {
-                if (errno == EAGAIN)
+                if (errno == EAGAIN) {
+            events &= ~EPOLLIN;
                     return 0;
+                }
                 ERR_MSG("recv");
                 return n;
             }
             if (n == 0) {
                 return -(errno = EPIPE);
             }
-            recvbuf.commit(n);
+            recvbuf.commit(s, n);
             return n;
         }
         int recv(struct sockaddr_in& sa) {
@@ -160,7 +162,7 @@ struct EPollContext
 
     typename buffer_list::iterator iter_; // = buflis.end();
     //std::map<uint64_t> pids_; //std::vector<struct sockaddr_in> peers_;
-    struct sockaddr_in sa_;
+    struct sockaddr_in sa_peer_;
 
     ~EPollContext() {
         do_close(umain);
@@ -175,13 +177,13 @@ struct EPollContext
     {
         if (connect_ip) {
             // umain.connect(connect_ip, port);
-            bzero(&sa_, sizeof(sa_));
-            sa_.sin_family = AF_INET;
-            inet_pton(AF_INET, connect_ip, &sa_.sin_addr);
-            sa_.sin_port = htons(port);
+            bzero(&sa_peer_, sizeof(sa_peer_));
+            sa_peer_.sin_family = AF_INET;
+            inet_pton(AF_INET, connect_ip, &sa_peer_.sin_addr);
+            sa_peer_.sin_port = htons(port);
         } else {
             umain.listen(NULL, port);
-            bzero(&sa_, sizeof(sa_));
+            bzero(&sa_peer_, sizeof(sa_peer_));
         }
         iter_ = buflis.end();
         epoll_add(umain.fd, EPOLLIN|EPOLLOUT, &umain);
@@ -251,7 +253,7 @@ struct EPollContext
     {
         // struct sockaddr_in sa;
         int n;
-        while ((um.events & EPOLLIN) && (n = um.recv(sa_)) > 0) {
+        while ((um.events & EPOLLIN) && (n = um.recv(sa_peer_)) > 0) {
             char* p = um.recvbuf.begin();
             fwrite(p, um.recvbuf.size(), 1, stdout);
             um.recvbuf.consume(um.recvbuf.size());
@@ -268,11 +270,11 @@ struct EPollContext
     }
     void do_send(UDPMain& um)
     {
-        if (sa_.sin_port == 0) {
+        if (sa_peer_.sin_port == 0) {
             return;
         }
         while ((um.events & EPOLLOUT) && iter_ != buflis.end()) {
-            int n = um.send(*iter_, sa_); //(iter_->begin(), iter_->end());
+            int n = um.send(*iter_, sa_peer_); //(iter_->begin(), iter_->end());
             if (n < 0) {
                 return on_error(um, errno);
             }

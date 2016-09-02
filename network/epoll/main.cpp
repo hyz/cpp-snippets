@@ -23,7 +23,7 @@ int main(int argc, char* const argv[])
 
     //DEBUG("Enter y to force keyframe, q to quit\n");
     for (buffer_list::iterator it = buflis.begin(); ; ) {
-        char line[128];
+        char line[512];
         fgets(line,sizeof(line), stdin);
 
         if (trim_right(line)[0] == '\0')
@@ -37,7 +37,7 @@ int main(int argc, char* const argv[])
         } else {
             strcat(line, "\n");
             it = buflis.alloc(it);
-            it->put(line, line+strlen(line));
+            it->put(line, strlen(line));
             buflis.done(it);
         }
     }
