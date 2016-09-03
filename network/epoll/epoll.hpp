@@ -17,18 +17,6 @@
 #include "thread.hpp"
 #include "buffer.hpp"
 
-inline int nonblocking(int fd)
-{
-    int opts = fcntl(fd, F_GETFL);
-    if(opts < 0) {
-        ERR_EXIT("fcntl %d F_GETFL", fd);
-    }
-    opts = opts | O_NONBLOCK;
-    if(fcntl(fd, F_SETFL, opts) < 0) {
-        ERR_EXIT("fcntl %d F_SETFL", fd);
-    }
-    return fd;
-}
 inline struct sockaddr_in make_sa(char const*ip, short port)
 {
     struct sockaddr_in sa;
@@ -51,11 +39,19 @@ struct EventInterface {
     virtual void forward(Context& ctx, int evts) = 0;
 };
 
+struct epoll_socket_access_helper {
+    template <typename T> static T* init(T& o, int fd, struct sockaddr_in&) {
+        o.fd_=fd;
+        o.events_ = 0;
+        return o.nonblocking(); // return &o;
+    }
+};
 template <typename XData, int Type, typename Context>
 struct EPollSocket : EventInterface<Context>, boost::noncopyable
 {
     typedef EPollSocket<XData,Type,Context> ThisType;
     /// EPOLLIN | EPOLLOUT | EPOLLET
+    // enum { type=Type; }
 
     ~EPollSocket() {
         if (fd_ >= 0)
@@ -92,12 +88,13 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         return send_(p,end, &sa, sizeof(sa));
     }
 
-    ThisType& connect(const char* ip, unsigned short port) {
+    int connect(const char* ip, unsigned short port) {
         struct sockaddr_in sa = make_sa(ip,port);
         open()->fcntl(O_NONBLOCK, false);
-        if (::connect(fd_, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        int ec = ::connect(fd_, (struct sockaddr *)&sa, sizeof(sa));
+        if (ec < 0) {
             if (errno == EINPROGRESS) {
-                DEBUG("connecting %s:%d ...", ip, (int)port);
+                DEBUG("connect %s:%d EINPROGRESS", ip, (int)port);
             } else {
                 ERR_EXIT("connect");
             }
@@ -105,69 +102,67 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
             DEBUG("connected %s:%d [OK]", ip, (int)port);
             this->fcntl(O_NONBLOCK, true);
         }
-        return *this;
+        return ec;
     }
-    ThisType& bind(const char* ip, unsigned short port) {
+    int bind(const char* ip, unsigned short port) {
         struct sockaddr_in sa = make_sa(ip,port);
         open()->fcntl(O_NONBLOCK, true);
-        if (::bind(fd_, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        int rc = ::bind(fd_, (struct sockaddr *)&sa, sizeof(sa));
+        if (rc < 0) {
             ERR_EXIT("bind");
         }
         DEBUG("bind %s:%d", ip ? ip : "*", (int)port);
-        return *this;
+        return rc;
     }
-    ThisType& listen(const char* ip, unsigned short port, int backlog=128) {
+    int listen(const char* ip, unsigned short port, int backlog=128) {
         open()->fcntl(O_NONBLOCK, true);
         int y=1;
         if (::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &y, sizeof(y)) < 0) {
             ERR_EXIT("setsockopt");
         }
-        this->bind(ip,port);
-        if (::listen(fd_, backlog) < 0) {
+        int rc;
+        rc = this->bind(ip,port);
+        if (rc < 0) {
+            ERR_EXIT("bind");
+        }
+        rc = ::listen(fd_, backlog);
+        if (rc < 0) {
             ERR_EXIT("listen");
         }
-        return *this;
+        return rc;
     }
-    template <typename T>
-    bool accept(T& lisk) {
-        struct sockaddr_in sa; //struct sockaddr_in clientaddr;
+    template <typename Sock> int accept(Sock& sk) {
+        struct sockaddr_in sa;
         socklen_t slen = sizeof(struct sockaddr_in);
-        int sfd = ::accept(lisk.fd(), (struct sockaddr *)&sa, &slen);
-        if (sfd < 0) {
+        int afd = ::accept(fd_, (struct sockaddr *)&sa, &slen);
+        if (afd < 0) {
+            events_ = 0;
             if (errno == EAGAIN)
-                return false;
-            ERR_EXIT("accept: %d", sfd);
+                return 0;
+            ERR_EXIT("accept: %d", afd);
         }
-            char cp[64]; // = {0};
-            inet_ntop(AF_INET, &sa.sin_addr, cp,64);
-            DEBUG("accept: %s", cp);
-        fd_ = nonblocking(sfd);
-        return true;
+        epoll_socket_access_helper::init(sk, afd, sa);
+        {
+            char tmp[64]; // = {0};
+            inet_ntop(AF_INET, &sa.sin_addr, tmp,64);
+            DEBUG("accept: %s", tmp);
+        }
+        return 1;
     }
 
 private:
-    int fd_;
-    uint32_t events_;
-    XData xdata_; //array_buf<bufsiz> xdata_;
-
     virtual void forward(Context& ctx, int evts) {
         events_ = evts;
         //DEBUG("forward events %x, %d", evts, (int)ok(EPOLLOUT));
         ctx.on_events(*this);
     }
+private:
+    friend struct epoll_socket_access_helper;
+    int fd_;
+    uint32_t events_;
+    XData xdata_; //array_buf<bufsiz> xdata_;
 
-    ThisType* open() {
-        if (is_open()) {
-            return this;
-        }
-        int sfd = ::socket(AF_INET, Type, 0);
-        if (sfd < 0)
-            ERR_EXIT("socket:SOCK_DGRAM");
-        fd_ = sfd; //nonblocking(sfd);
-        return this;
-    }
     int recv_(char*p, char*end, struct sockaddr_in* sa) {
-        //buffer_ref::range s = recvbuf_.spaces();
         if (p>=end || !ok(EPOLLIN)) {
             ERR_EXIT("recv error: %d %d", int(end-p), int(events_ & EPOLLIN));
         }
@@ -185,7 +180,6 @@ private:
         if (n == 0) {
             return -int(errno = EPIPE);
         }
-        //recvbuf_.commit(s, n);
         return n;
     }
     int send_(char* p, char* end, struct sockaddr_in* sa, socklen_t slen) {
@@ -203,29 +197,40 @@ private:
             ERR_MSG("send");
             return n;
         }
-        // buf.consume(n);
         return n;
+    }
+
+    ThisType* open() {
+        if (is_open()) {
+            return this;
+        }
+        int sfd = ::socket(AF_INET, Type, 0);
+        if (sfd < 0)
+            ERR_EXIT("socket:SOCK_DGRAM");
+        fd_ = sfd;
+        return this;
     }
 
     ThisType* fcntl(int msk, bool yn)
     {
-        int opts = ::fcntl(fd_, F_GETFL);
-        if (opts < 0) {
+        int flags = ::fcntl(fd_, F_GETFL);
+        if (flags < 0) {
             ERR_EXIT("fcntl %d F_GETFL", fd_);
         }
-        int prevopts = opts;
+        int prevflags = flags;
         if (yn) {
-            opts |= msk; // | O_NONBLOCK;
+            flags |= msk; // | O_NONBLOCK;
         } else {
-            opts &= ~msk;
+            flags &= ~msk;
         }
-        if (opts != prevopts) {
-            if(::fcntl(fd_, F_SETFL, opts) < 0) {
+        if (flags != prevflags) {
+            if(::fcntl(fd_, F_SETFL, flags) < 0) {
                 ERR_EXIT("fcntl %d F_SETFL", fd_);
             }
         }
         return this;
     }
+    ThisType* nonblocking() { return fcntl(O_NONBLOCK, true); }
 };
 
 template <typename buffer_list>
@@ -320,10 +325,10 @@ struct NetworkIO : boost::noncopyable
 
     template <typename Sock> void do_close(Sock& sk) {
         if (sk.is_open()) {
+            ERR_MSG("close %d", sk.fd());
             epoll_del(sk);
             sk.close();
         }
-        //ERR_MSG("Socket %d closed", sk.fd());
     }
 
     template <typename Sock> void do_recv(Sock& sk)
@@ -377,8 +382,14 @@ struct NetworkIO : boost::noncopyable
             DEBUG("only-one-accepted");
             return;
         }
-        if (tcp_.accept(lisk))
-            epoll_add(tcp_, EPOLLIN|EPOLLOUT);
+        int n = lisk.accept(tcp_);
+        if (n <= 0) {
+            if (n < 0)
+                ERR_EXIT("accept");
+            DEBUG("accept:EINPROGRESS");
+            return;
+        }
+        epoll_add(tcp_, EPOLLIN|EPOLLOUT);
     }
     void do_send(ListenSocket& lisk) {}
 
@@ -389,19 +400,19 @@ struct NetworkIO : boost::noncopyable
         ev.data.ptr = static_cast<void*>(&sk);
         ev.events = evts|EPOLLET; //EPOLLIN|EPOLLOUT | EPOLLET;
         if (::epoll_ctl(epfd, EPOLL_CTL_ADD, sk.fd(), &ev) < 0)
-            ERR_EXIT("init:epoll_ctl");
+            ERR_EXIT("epoll_ctl");
     }
     template <typename T>
     void epoll_del(T& sk) {
         struct epoll_event ev;
         if (epoll_ctl(epfd, EPOLL_CTL_DEL, sk.fd(), &ev) < 0)
-            ERR_EXIT("deinit:epoll_ctl");
+            ERR_EXIT("epoll_ctl");
     }
 
     static int epoll_create() {
         int fd = ::epoll_create(16);
         if (fd < 0)
-            ERR_EXIT(":epoll_create");
+            ERR_EXIT("epoll_create");
         return fd;
     }
 
