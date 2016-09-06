@@ -8,28 +8,30 @@
 #include <signal.h>
 #include <pthread.h>
 #include <sys/time.h>
-#include "gmlib.h"
 #include "log.hpp"
 #include "thread.hpp"
 #include "clock.hpp"
 #include "epoll.hpp"
 #include "buffer.hpp"
+#ifndef NOENC
+# include "gmlib.h"
+#endif
 
 enum { BITSTREAM_LEN  = (1920 * 1080 * 3 / 2) }; // (720 * 576 * 3 / 2)
-//typedef buffer_list_fix<BITSTREAM_LEN> buffer_list;
 
-template <typename buffer_list>
+template <typename BufferList>
 struct Encoder : boost::noncopyable
 {
     enum { MAX_BITSTREAM_NUM = 1 };
 
     Thread<Encoder> thread;
+    BufferList& buflis;
+#ifndef NOENC
     gm_system_t gm_system;
     void *capture_object;
     void *encode_object;
     enum { cch_ = 0 }; //cch_ = 0; // use capture virtual channel 0
 
-    buffer_list& buflis;
     FILE *record_file;
 
     ~Encoder() {
@@ -38,11 +40,12 @@ struct Encoder : boost::noncopyable
         gm_release();
         /// fclose(record_file);
     }
-
-    Encoder(buffer_list& lis, FILE* recfile=0)
-        : thread(*this, "Encoder")
+#endif
+    Encoder(BufferList& lis, FILE* recfile=0)
+        : thread(*this, "Encode")
         , buflis(lis)
     {
+#ifndef NOENC
         DECLARE_ATTR(cap_attr, gm_cap_attr_t);
         DECLARE_ATTR(h264e_attr, gm_h264e_attr_t);
 
@@ -71,9 +74,11 @@ struct Encoder : boost::noncopyable
         gm_set_attr(encode_object, &h264e_attr);
 
         record_file = recfile; //stdout; //fopen(filename, "wb");
+#endif
     }
     void run() // thread func
     {
+#ifndef NOENC
         void *groupfd = gm_new_groupfd(); // create new record group fd (??ȡgroupfd)
         void *bindfd = gm_bind(groupfd, capture_object, encode_object);
         if (gm_apply(groupfd) < 0) {
@@ -82,11 +87,11 @@ struct Encoder : boost::noncopyable
 
         gm_pollfd_t poll_fds[MAX_BITSTREAM_NUM];
         gm_enc_multi_bitstream_t multi_bs[MAX_BITSTREAM_NUM];
-        typename buffer_list::iterator bufs[MAX_BITSTREAM_NUM];
+        typename BufferList::iterator bufs[MAX_BITSTREAM_NUM];
 
         memset(poll_fds, 0, sizeof(poll_fds));
         for (int i = 0; i < MAX_BITSTREAM_NUM; i++) {
-            bufs[i] = buflis.alloc(buflis.begin());
+            bufs[i] = buflis.alloc(BITSTREAM_LEN);
         }
 
         poll_fds[cch_].bindfd = bindfd;
@@ -123,16 +128,17 @@ struct Encoder : boost::noncopyable
                     if ((multi_bs[i].retval < 0) && multi_bs[i].bindfd) {
                         ERR_MSG("CH%d Error to receive bitstream. ret=%d", i, multi_bs[i].retval);
                     } else if (multi_bs[i].retval == GM_SUCCESS) {
-                        bufs[i]->commit(*bufs[i], multi_bs[i].bs.bs_len);
-                        buflis.done(bufs[i]);
-                        bufs[i] = buflis.alloc(bufs[i]);
-                        DEBUG("<CH%d, mv_len=%d bs_len=%d, keyframe=%d, newbsflag=0x%x>",
-                                i, multi_bs[i].bs.mv_len, multi_bs[i].bs.bs_len,
-                                multi_bs[i].bs.keyframe, multi_bs[i].bs.newbs_flag);
+                        //DEBUG("<CH%d, mv_len=%d bs_len=%d, keyframe=%d, newbsflag=0x%x>",
+                        //    i, multi_bs[i].bs.mv_len, multi_bs[i].bs.bs_len, multi_bs[i].bs.keyframe, multi_bs[i].bs.newbs_flag);
                         if (record_file) {
-                            fwrite(multi_bs[i].bs.bs_buf, 1, multi_bs[i].bs.bs_len, record_file);
+                            fwrite(multi_bs[i].bs.bs_buf, multi_bs[i].bs.bs_len, 1, record_file);
                             fflush(record_file);
                         }
+
+                        replace_startbytes_with_len4(multi_bs[i].bs.bs_buf, multi_bs[i].bs.bs_len - 4);
+                        bufs[i]->commit(*bufs[i], multi_bs[i].bs.bs_len);
+                        buflis.done(bufs[i]);
+                        bufs[i] = buflis.alloc(BITSTREAM_LEN);
                     }
                 }
             }
@@ -140,6 +146,25 @@ struct Encoder : boost::noncopyable
         gm_unbind(bindfd);
         gm_apply(groupfd);
         gm_delete_groupfd(groupfd);
+#endif
+    }
+
+    static void replace_startbytes_with_len4(char* bs_buf, uint32_t bs_len4) {
+        if ((ptrdiff_t)bs_buf % 4) {
+            ERR_EXIT("bs_buf addr %p", bs_buf);
+        }
+        uint32_t* u4 = (uint32_t*)bs_buf;
+        if (ntohl(*u4) != 0x00000001)
+            ERR_EXIT("bs_buf startbytes %08x", *u4);
+        *u4 = htonl(bs_len4);
+
+        {
+            static unsigned maxlen4 = 0;
+            if (bs_len4 > maxlen4) {
+                maxlen4=bs_len4;
+                fprintf(stderr, "max bs_len4 %u\n", maxlen4);
+            }
+        }
     }
 };
 

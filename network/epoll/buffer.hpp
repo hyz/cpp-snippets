@@ -16,8 +16,9 @@ struct buffer_ref : boost::iterator_range<char*>
     range spaces() const { return boost::iterator_range<char*>(end(), end_); }
 
     void commit(range& sub, unsigned len) {
-        if (sub.begin() != end() || len > size_fr(end()) || sub.size() != size_fr(end())) {
-            ERR_EXIT("buffer_ref:commit %u", len);
+        if (&sub != this
+                && (sub.begin() != end() || len > size_fr(end()) || sub.size() != size_fr(end()))) {
+            ERR_EXIT("buffer_ref:commit %u %u", len, sub.size());
         }
         advance_end(len); // cur_ += len;
     }
@@ -65,6 +66,20 @@ struct array_buf : buffer_ref
     {}
     char array_[Capacity];
 };
+template <unsigned Capacity>
+struct malloc_buf : buffer_ref
+{
+    ~malloc_buf() {
+        if (begin()) {
+            ::free(begin());
+            buffer_ref& b = *this;
+            b = buffer_ref();
+        }
+    }
+    malloc_buf()
+        : buffer_ref((char*)::malloc(Capacity))
+    { end_ = begin() + Capacity; }
+};
 
 template <unsigned BufSiz>
 struct buffer_list_fix
@@ -76,6 +91,7 @@ struct buffer_list_fix
     };
     enum { EAlloc = 0x02, EUsable = 0x04, EUsing = 0x08 };
 
+    enum { buffer_size = BufSiz };
     enum { Bufcount = 2 };
     statful_buf bufs_[Bufcount];
     pthread_mutex_type mutex_;
@@ -97,14 +113,16 @@ struct buffer_list_fix
         ip_ = begin();
     }
 
-    iterator alloc() {
+    iterator alloc(unsigned expsize) {
+        if (expsize > BufSiz)
+            ERR_EXIT("alloc:size");
         pthread_mutex_lock_guard lk(mutex_);
-        DEBUG("buf:alloc: %u %d", ip_-begin(), ip_->stat);
+        //DEBUG("buf:alloc: %u %d", ip_-begin(), ip_->stat);
         if (ip_->stat == EUsing) {
             ip_ = incr(ip_);
             if (ip_->stat == EUsing)
                 ERR_EXIT("stat:using");
-        DEBUG("buf:using:alloc: %u %d", ip_-begin(), ip_->stat);
+        //DEBUG("buf:using:alloc: %u %d", ip_-begin(), ip_->stat);
         }
         ip_->stat = EAlloc;
         ip_->consume(ip_->size());
@@ -120,7 +138,7 @@ struct buffer_list_fix
             if (j->stat != EUsable)
                 return end();
         }
-        DEBUG("buf:wait: %u %d", j-begin(), j->stat);
+        //DEBUG("buf:wait: %u %d", j-begin(), j->stat);
         j->stat = EUsing;
         return j;
     }
@@ -132,11 +150,11 @@ struct buffer_list_fix
             //pthread_mutex_lock_guard lk(mutex_);
             ip_ = incr(j);
             j->stat = EUsable;
-            DEBUG("done EAlloc %u", j-begin());
+            //DEBUG("done EAlloc %u", j-begin());
             cond_.signal();
         } else if (j->stat == EUsing) {
             j->stat = 0;
-            DEBUG("done EUsing %u", j-begin());
+            //DEBUG("done EUsing %u", j-begin());
         } else {
             ERR_EXIT("buf:stat");
         }

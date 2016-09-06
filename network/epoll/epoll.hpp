@@ -13,25 +13,10 @@
 #include <string.h>
 //#include <list>
 #include <vector>
+#include <boost/assert.hpp>
 #include "log.hpp"
 #include "thread.hpp"
 #include "buffer.hpp"
-
-inline struct sockaddr_in make_sa(char const*ip, short port)
-{
-    struct sockaddr_in sa;
-    bzero(&sa, sizeof(sa));
-    sa.sin_family = AF_INET;
-    if (ip) {
-        if (inet_pton(AF_INET, ip, &sa.sin_addr) < 0) {
-            ERR_EXIT("inet_pton");
-        }
-    } else {
-        sa.sin_addr.s_addr = INADDR_ANY;
-    }
-    sa.sin_port = htons(port);
-    return sa;
-}
 
 template <typename Context>
 struct EventInterface {
@@ -51,16 +36,15 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
 {
     typedef EPollSocket<XData,Type,Context> ThisType;
     typedef XData XDataType;
-    /// EPOLLIN | EPOLLOUT | EPOLLET
     // enum { type=Type; }
 
     ~EPollSocket() {
         if (fd_ >= 0)
             ::close(fd_);
     }
-    EPollSocket() { fd_=-1; }
-    EPollSocket(XData& xd) : xdata_(xd) { fd_=-1; events_=0; }
-    EPollSocket(int xfd, XData& xd) : xdata_(xd) { fd_ = xfd; events_=0; }
+    EPollSocket() { fd_=-1; events_=0; }
+    //EPollSocket(XData& xd) : xdata_(xd) { fd_=-1; events_=0; }
+    //EPollSocket(int xfd, XData& xd) : xdata_(xd) { fd_ = xfd; events_=0; }
 
     XData& xdata() { return xdata_; }
     int type() const { return Type; }
@@ -68,6 +52,7 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
     int ok(int msk) const { return (events_ & msk); } // bool
     int fd() const { return fd_; }
     bool is_open() const { return fd_>=0; }
+    unsigned events() const { return events_; }
     void close() {
         if (is_open()) {
             ::close(fd_);
@@ -213,26 +198,48 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
             return n;
         }
         if (n == 0) {
-            return -int(errno = EPIPE);
+#if defined(__arm__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
+            ERR_MSG("recv:CLOSE:EPIPE");
+#else
+            errno = EPIPE;
+            ERR_MSG("recv:CLOSE:EPIPE");
+#endif
+            return -1; //int(errno = EPIPE);
         }
         return n;
     }
     int send_(char* p, char* end, struct sockaddr_in* sa, socklen_t slen) {
-        if (p>=end || !ok(EPOLLOUT)) {
+        if (p>=end || !ok(EPOLLOUT) || sa || slen>0) {
             ERR_EXIT("send error: %d %d", int(end-p), int(events_ & EPOLLOUT));
         }
-        enum { MTU=1500-64 };
-        int xlen = std::min(int(MTU), int(end-p));
+        //enum { MTU=1500-64 }; //std::min(int(MTU), int(end-p)); // UDP
+        int xlen = (end - p);
         int n = ::sendto(fd_, p, xlen, 0, (struct sockaddr*)sa, slen);
         if (n < xlen)
             events_ &= ~EPOLLOUT;
-        if (n < 0) {
+        if (n <= 0) {
             if (errno == EAGAIN)
                 return 0;
             ERR_MSG("send");
             return n;
         }
         return n;
+    }
+
+    static struct sockaddr_in make_sa(char const*ip, short port)
+    {
+        struct sockaddr_in sa;
+        bzero(&sa, sizeof(sa));
+        sa.sin_family = AF_INET;
+        if (ip) {
+            if (inet_pton(AF_INET, ip, &sa.sin_addr) < 0) {
+                ERR_EXIT("inet_pton");
+            }
+        } else {
+            sa.sin_addr.s_addr = INADDR_ANY;
+        }
+        sa.sin_port = htons(port);
+        return sa;
     }
 
 private:
@@ -312,9 +319,7 @@ struct Listen_service
                 DEBUG("accept:EINPROGRESS");
             } else {
                 StreamSocket* newsk = context->new_connection(/*std::move*/tmpsk);
-                if (newsk) {
-                    context->epoll.add(*newsk, EPOLLIN|EPOLLOUT);
-                } else {
+                if (!newsk) {
                     ERR_MSG("new_connection");
                     tmpsk.close();
                 }
@@ -330,6 +335,7 @@ struct Listen_service
             ERR_EXIT("fcntl");
         }
         context->epoll.add(lisk, EPOLLIN);
+        DEBUG("epoll.add %d lisk", lisk.fd());
     }
 
     Listen_service(Context& c) :context(&c) {}
@@ -355,24 +361,28 @@ struct Stream_service
             ERR_EXIT("listen:fcntl");
         }
         context->epoll.add(sk, EPOLLOUT|EPOLLIN);
+        DEBUG("epoll.add %d streamsk", sk.fd());
     }
 
     Stream_service(Context& c) :context(&c) {}
 };
 
-template <typename Buffer_list>
-struct NetworkIO //: IO_objects<Buffer_list>
+template <typename TxBuffers, typename RxOutput>
+struct NetworkIO //: IO_objects<TxBuffers>
 {
-    //typedef IO_objects<Buffer_list> Base;
-    typedef NetworkIO<Buffer_list> This;
-    typedef array_buf<1024*24-64> Recvbuffer;
+    //typedef IO_objects<TxBuffers> Base;
+    typedef NetworkIO<TxBuffers,RxOutput> This;
+    enum { recvbuf_size=RxOutput::max_packet_size };
+    //typedef array_buf<recvbuf_size> Recvbuffer;
+    typedef malloc_buf<recvbuf_size> Recvbuffer;
 
     typedef EPollSocket<Recvbuffer  ,SOCK_STREAM,This> StreamSocket;
     typedef EPollSocket<StreamSocket,SOCK_STREAM,This> ListenSocket;
     typedef EPollSocket<Recvbuffer  ,SOCK_DGRAM ,This> DatagramSocket;
 
-    Buffer_list& buflis;
-    typename Buffer_list::iterator iter_; // = buflis.end();
+    TxBuffers& txbufs;
+    typename TxBuffers::iterator tx_iter_; // = txbufs.end();
+    RxOutput& rxout;
 
     //DatagramSocket udp_;
     ListenSocket lisk_;
@@ -388,14 +398,14 @@ struct NetworkIO //: IO_objects<Buffer_list>
         do_close(streamsk_);
     }
 
-    NetworkIO(Buffer_list& lis, char const* connect_ip = 0, short port=9990)
-        : buflis(lis)
+    NetworkIO(TxBuffers& txs, RxOutput& rxo, char const* connect_ip = 0, short port=9990)
+        : txbufs(txs) , rxout(rxo)
         //, udp_(), streamsk_()
         , listenio_(*this)
         , streamio_(*this)
         , thread(*this, "NetworkIO")
     {
-        iter_ = buflis.end();
+        tx_iter_ = txbufs.end();
 #if 1
         if (connect_ip) {
             streamsk_.connect(connect_ip, port);
@@ -409,17 +419,16 @@ struct NetworkIO //: IO_objects<Buffer_list>
         } else {
             datagramio_.bind(NULL, port);
         }
-            epoll.add(udp_, EPOLLIN|EPOLLOUT);
 #endif
     }
 
     void run() // thread func
     {
         while (!thread.stopped) {
-            if (iter_ == buflis.end()) {
-                iter_ = buflis.wait(10);
+            if (tx_iter_ == txbufs.end()) {
+                tx_iter_ = txbufs.wait(10);
             }
-            if (iter_ != buflis.end()) {
+            if (tx_iter_ != txbufs.end()) {
                 do_send(streamsk_); // do_recv(udp_);
             }
 
@@ -440,20 +449,25 @@ struct NetworkIO //: IO_objects<Buffer_list>
     void process_io(StreamSocket& sk) { streamio_.process_io(sk); }
 
     StreamSocket* new_connection(/*std::move*/StreamSocket& sk) {
-        if (&sk != &streamsk_) {
-            streamsk_.init_with_fd(sk.fd());
-            sk.fd_ = -1;
+        if (&sk == &streamsk_) {
+            ERR_EXIT("new_connection");
         }
+        if (streamsk_.is_open()) {
+            ERR_EXIT("already open");
+        }
+        streamsk_.init_with_fd(sk.fd());
+        sk.fd_ = -1; // std::move
+        streamio_.setup(streamsk_);
         return &streamsk_;
     }
 
-    template <typename Sock> void error(Sock& sk, int ec) {
-        ERR_MSG("error %d", sk.fd());
+    template <typename Sock> void error(Sock& sk, int ec, char const* ps) {
+        ERR_MSG("%s error: %d", ps, sk.fd());
         do_close(sk);
     }
     template <typename Sock> void do_close(Sock& sk) {
         if (sk.is_open()) {
-            ERR_MSG("close %d", sk.fd());
+            ERR_MSG("close, epoll.del %d", sk.fd());
             epoll.del(sk);
             sk.close();
         }
@@ -466,46 +480,51 @@ struct NetworkIO //: IO_objects<Buffer_list>
             if ((ptrdiff_t)p % sizeof(uint32_t) || (void*)u4 != (void*)p)
                 ERR_EXIT("process_recvd_data %p %p", p, u4);
 
-            unsigned len = ntohl(*u4);
-            if (rb.size() < len+4) {
+            unsigned len4 = ntohl(*u4);
+            if (rb.size() < 4+len4) {
                 break;
             }
-            *u4 = htonl(0x00000001);
+            *u4 = htonl(0x00000001); // p += 4; //len4 -= sizeof(uint32_t);
 
-            {
-                p += 4;
-                //len -= sizeof(uint32_t);
-                fwrite(p, len, 1, stdout);
-            }
-
-            rb.consume(4+len);
+            rxout(p, 4+len4); // fwrite(p, 4+len4, 1, out_fp);
+            rb.consume(4+len4);
         }
     }
 
     template <typename Sock> void do_recv(Sock& sk) {
         while (sk.ok(EPOLLIN)) {
             Recvbuffer& rb = sk.xdata();
-            Recvbuffer::range sp = rb.spaces();
+            typename Recvbuffer::range sp = rb.spaces();
+            if (sp.size() < 1024) {
+                ERR_EXIT("bufsiz<1024: %u %u", sp.size(), rb.size());
+            }
             int n = sk.recv(sp.begin(), sp.end());//(, sa_peer_);
             if (n < 0) {
-                return error(sk, errno);
+                return error(sk, errno, __FUNCTION__);
             }
-            if (n > 0) {
-                rb.commit(sp, n);
-                process_recvd_data(rb);
+            if (n == 0) {
+                BOOST_ASSERT(!sk.ok(EPOLLIN));
+                break;
             }
+            rb.commit(sp, n);
+            process_recvd_data(rb);
         }
     }
     template <typename Sock> void do_send(Sock& sk) {
-        while (sk.ok(EPOLLOUT) && iter_ != buflis.end()) {
-            int n = sk.send(iter_->begin(), iter_->end());//(sa_peer_);
+        //DEBUG("", sk.is_open(), sk.events() );
+        while (sk.ok(EPOLLOUT) && tx_iter_ != txbufs.end()) {
+            int n = sk.send(tx_iter_->begin(), tx_iter_->end());//(sa_peer_);
             if (n < 0) {
-                return error(sk, errno);
+                return error(sk, errno, __FUNCTION__);
             }
-            iter_->consume(n);
-            if (iter_->empty()) {
-                buflis.done(iter_);
-                iter_ = buflis.end();
+            if (n == 0) {
+                BOOST_ASSERT(!sk.ok(EPOLLOUT));
+                break;
+            }
+            tx_iter_->consume(n);
+            if (tx_iter_->empty()) {
+                txbufs.done(tx_iter_);
+                tx_iter_ = txbufs.end();
             }
         }
     }
@@ -525,16 +544,16 @@ struct IO_datagram
             while (sk.ok(EPOLLOUT)) {
                 ;
             }
-            //if (iter_ == buflis.end())
+            //if (tx_iter_ == txbufs.end())
             //    break;
-            //int n = sk.send(iter_->begin(), iter_->end());//(sa_peer_);
+            //int n = sk.send(tx_iter_->begin(), tx_iter_->end());//(sa_peer_);
             //if (n < 0) {
             //    return error(sk, errno);
             //}
-            //iter_->consume(n);
-            //if (iter_->empty()) {
-            //    buflis.done(iter_);
-            //    iter_ = buflis.end();
+            //tx_iter_->consume(n);
+            //if (tx_iter_->empty()) {
+            //    txbufs.done(tx_iter_);
+            //    tx_iter_ = txbufs.end();
             //}
         } else {
             if (sk.ok(EPOLLIN)) {
@@ -554,6 +573,7 @@ struct IO_datagram
             //sa_peer_ = make_sa(ip,port);
             sk.fcntl(O_NONBLOCK, true);
             context->epoll_add(sk, EPOLLIN|EPOLLOUT);
+            DEBUG("epoll.add %d", sk.fd());
         }
     }
 
@@ -565,13 +585,11 @@ struct IO_datagram
             //sa_peer_ = make_sa(ip,port);
             sk.fcntl(O_NONBLOCK, true);
             context->epoll_add(sk, EPOLLIN|EPOLLOUT);
+            DEBUG("epoll.add %d", sk.fd());
         }
     }
 
     IO_datagram(Context& c) :context(&c) {}
-};
-
-struct NetworkMain {
 };
 
 #endif // EPOLL_HPP__

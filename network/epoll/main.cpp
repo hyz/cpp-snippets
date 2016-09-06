@@ -1,9 +1,8 @@
 #include <boost/algorithm/string.hpp>
 #include "buffer.hpp"
 #include "epoll.hpp"
-//#include "enc.hpp"
+#include "enc.hpp"
 
-enum { BITSTREAM_LEN  = (1920 * 1080 * 3 / 2) }; // (720 * 576 * 3 / 2)
 typedef buffer_list_fix<BITSTREAM_LEN> buffer_list;
 
 static char* trim_right(char* s) {
@@ -14,22 +13,34 @@ static char* trim_right(char* s) {
     return s;
 }
 
-static FILE* open_rec_file()
+//char filename[50] = "/mnt/nfs/tmp/rec.264";
+//sprintf(filename, "/mnt/nfs/tmp/ch%d_%dx%d.264", cch_ , gm_system.cap[cch_].dim.width, gm_system.cap[cch_].dim.height);
+
+struct Sink
 {
-    //char filename[50] = "/mnt/nfs/tmp/rec.264";
-    //sprintf(filename, "/mnt/nfs/tmp/ch%d_%dx%d.264", cch_ , gm_system.cap[cch_].dim.width, gm_system.cap[cch_].dim.height);
-    return NULL;//fopen(filename, "wb");
-}
+    enum { max_packet_size=BITSTREAM_LEN };
 
-int main(int argc, char* const argv[])
+    void operator()(char* p, unsigned len) {
+        if (ofp)
+            fwrite(p, len, 1, ofp);
+    }
+    Sink(FILE* f) {
+        ofp = f;
+        if (!ofp)
+            ofp = stdout;
+    }
+    ~Sink() {
+        if (ofp && ofp != stdout && ofp != stderr) {
+            fclose(ofp);
+        }
+    }
+    FILE* ofp;
+};
+
+typedef buffer_list BufferList;
+
+void user_input(BufferList& buflis)
 {
-    buffer_list buflis;
-    //Encoder<buffer_list> enc(buflis, open_rec_file());
-    NetworkIO<buffer_list> nwk(buflis, argc>1 ? argv[1] : NULL);
-
-    //enc.thread.start(); // run
-    nwk.thread.start(); // run
-
     //DEBUG("'/help'");
     for (;;) {
         char line[512];
@@ -40,14 +51,12 @@ int main(int argc, char* const argv[])
         if (line[0] == '/') {
             if (strcmp(line,"/help") == 0) {
             } else if (strcmp(line,"/exit") == 0 || strcmp(line,"/quit") == 0) {
-                //enc.thread.stop();
-                nwk.thread.stop();
                 break;
             }
         } else {
             strcat(line, "\n");
             unsigned len = strlen(line);
-            buffer_list::iterator it = buflis.alloc();
+            BufferList::iterator it = buflis.alloc(512);
             /*_*/{
                 uint32_t u4 = htonl(len);
                 it->put((char*)&u4, sizeof(uint32_t));
@@ -56,8 +65,41 @@ int main(int argc, char* const argv[])
             buflis.done(it);
         }
     }
-
-    nwk.thread.join();
-    //enc.thread.join(); // pthread_join
 }
+
+int main(int argc, char* const argv[])
+{
+    DEBUG("errno %s", strerror(errno));
+    if (argc == 2) { // client
+        Sink rec264( fopen("tmp/rec2.264","wb") );
+        BufferList dummyLis;
+
+        NetworkIO<BufferList,Sink> nwk(dummyLis, rec264, argv[1]);
+        nwk.thread.start(); // run
+
+        user_input(dummyLis);
+        nwk.thread.stop();
+        nwk.thread.join();
+
+    } else {
+        Sink recnwk( fopen("tmp/feedback.out","wb") );
+        Sink recenc( fopen("tmp/rec1.264","wb") );
+        BufferList buflis;
+
+        Encoder<BufferList> enc(buflis, recenc.ofp);
+        NetworkIO<BufferList,Sink> nwk(buflis, recnwk, NULL);
+        enc.thread.start(); // run
+        nwk.thread.start(); // run
+
+        user_input(buflis);
+        enc.thread.stop();
+        nwk.thread.stop();
+        nwk.thread.join();
+        enc.thread.join(); // pthread_join
+    }
+}
+
+#if defined(__arm__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
+# warning "__arm__ gcc4.4"
+#endif
 

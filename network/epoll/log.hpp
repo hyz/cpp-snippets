@@ -28,7 +28,8 @@ inline int ERR_MSG(char const*fmt, ...)
     va_start(ap, fmt);
     n = vfprintf(stderr, fmt, ap);
     va_end(ap);
-    return n + fprintf(stderr, ": %s\n", err?strerror(err):"");
+    n += fprintf(stderr, ": %s\n", err?strerror(err):"");
+    return n;
 }
 inline void ERR_EXIT(char const*fmt, ...)
 {
