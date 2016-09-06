@@ -82,6 +82,7 @@ struct buffer_list_fix
     pthread_cond_type cond_;
 
     typedef statful_buf* iterator;
+    iterator ip_;
 
     ~buffer_list_fix() {
         for (unsigned i=0; i<Bufcount; ++i) {
@@ -93,65 +94,74 @@ struct buffer_list_fix
             char* p = (char*)malloc(BufSiz);
             bufs_[i] = statful_buf(p, p, p+BufSiz);
         }
+        ip_ = begin();
     }
 
-    bool empty() const { return false; }
-    unsigned size() const { return Bufcount; }
-    iterator begin() { return &bufs_[0]; }
-    iterator end() { return begin()+size(); }
-    iterator last() { return end()-1; }
-
-    iterator alloc(iterator prev_hint) {
-        //validate_it(prev_hint);
+    iterator alloc() {
         pthread_mutex_lock_guard lk(mutex_);
-        iterator b = find_(0, prev_hint);
-        if (b == end()) {
-            b = find_(EUsable, prev_hint);
-            if (b == end())
-                ERR_EXIT("not-found");
+        DEBUG("buf:alloc: %u %d", ip_-begin(), ip_->stat);
+        if (ip_->stat == EUsing) {
+            ip_ = incr(ip_);
+            if (ip_->stat == EUsing)
+                ERR_EXIT("stat:using");
+        DEBUG("buf:using:alloc: %u %d", ip_-begin(), ip_->stat);
         }
-        //DEBUG("alloc:buf: %d %x, %u %u, %p %p %p", int(b-begin()), b->stat, b->size(), b->capacity(), b->begin(), b->end(), b->end_);
-        b->consume(b->size());
-        b->stat = EAlloc;
-        return b;
+        ip_->stat = EAlloc;
+        ip_->consume(ip_->size());
+        return ip_;
     }
 
     iterator wait(unsigned millis) {
         pthread_mutex_lock_guard lk(mutex_);
-        iterator b = find_(EUsable, begin());
-        if (b == end()) {
+        iterator j = findstat(EUsable, ip_, decr(ip_));
+        if (j->stat != EUsable) {
             cond_.wait(mutex_, millis);
-            b = find_(EUsable, begin());
-            if (b == end())
+            j = findstat(EUsable, ip_, decr(ip_));
+            if (j->stat != EUsable)
                 return end();
         }
-        b->stat = EUsing;
-        return b;
+        DEBUG("buf:wait: %u %d", j-begin(), j->stat);
+        j->stat = EUsing;
+        return j;
     }
 
-    void done(iterator b) {
-        if (b->stat == EAlloc) {
-            b->stat = EUsable;
+    void done(iterator j) {
+        if (j->stat == EAlloc) {
+            if (j != ip_)
+                ERR_EXIT("done %p %p", j, ip_);
+            //pthread_mutex_lock_guard lk(mutex_);
+            ip_ = incr(j);
+            j->stat = EUsable;
+            DEBUG("done EAlloc %u", j-begin());
             cond_.signal();
-        } else if (b->stat == EUsing) {
-            b->stat = 0;
+        } else if (j->stat == EUsing) {
+            j->stat = 0;
+            DEBUG("done EUsing %u", j-begin());
         } else {
             ERR_EXIT("buf:stat");
         }
     }
 
-    iterator find_(unsigned xe, iterator b2) {
-        if (++b2 >= end())
-            b2 = begin();
-        iterator end2 = b2+size();
-        for (; b2 < end2; ++b2) {
-            iterator b = &bufs_[ (b2-begin()) % size()];
-            if (b->stat == xe) {
-                //DEBUG("find: %d %x", int(b-begin()),xe);
-                return b;
-            }
+    bool empty() const { return false; }
+    unsigned size() const { return Bufcount; }
+    iterator end() { return begin()+size(); }
+private:
+    iterator begin() { return &bufs_[0]; }
+    iterator last() { return end()-1; }
+    inline iterator incr(iterator i) { return ((++i == end()) ? begin() : i); }
+    inline iterator decr(iterator i) { return ((i == begin()) ? last() : --i); }
+
+    //iterator findstat_r(unsigned xe, iterator p, iterator ep) {
+    //    while (p != ep && p->stat != xe) {
+    //        p = decr(p);
+    //    }
+    //    return p;
+    //}
+    iterator findstat(unsigned xe, iterator p, iterator ep) {
+        while (p != ep && p->stat != xe) {
+            p = incr(p);
         }
-        return end();
+        return p;
     }
 };
 

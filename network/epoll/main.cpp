@@ -31,7 +31,7 @@ int main(int argc, char* const argv[])
     nwk.thread.start(); // run
 
     //DEBUG("'/help'");
-    for (buffer_list::iterator it = buflis.begin(); ; ) {
+    for (;;) {
         char line[512];
         fgets(line,sizeof(line), stdin);
 
@@ -46,8 +46,13 @@ int main(int argc, char* const argv[])
             }
         } else {
             strcat(line, "\n");
-            it = buflis.alloc(it);
-            it->put(line, strlen(line));
+            unsigned len = strlen(line);
+            buffer_list::iterator it = buflis.alloc();
+            /*_*/{
+                uint32_t u4 = htonl(len);
+                it->put((char*)&u4, sizeof(uint32_t));
+            }
+            it->put(line, len);
             buflis.done(it);
         }
     }
