@@ -3,7 +3,7 @@
 #include "epoll.hpp"
 #include "enc.hpp"
 
-typedef buffer_list_fix<BITSTREAM_LEN> buffer_list;
+typedef buffer_list_fix<BITSTREAM_LEN> BufferList;
 
 static char* trim_right(char* s) {
     char* e = s + strlen(s);
@@ -26,8 +26,6 @@ struct FileSink
     }
     FileSink(FILE* f) {
         ofp = f;
-        if (!ofp)
-            ofp = stdout;
     }
     ~FileSink() {
         if (ofp && ofp != stdout && ofp != stderr) {
@@ -36,8 +34,6 @@ struct FileSink
     }
     FILE* ofp;
 };
-
-typedef buffer_list BufferList;
 
 void user_input(BufferList* buflis)
 {
@@ -73,25 +69,25 @@ int main(int argc, char* const argv[])
 {
     DEBUG("errno %s", strerror(errno));
     if (argc == 2) { // client
-        FileSink rec264( fopen("tmp/rec2.264","wb") );
+        FileSink rec264( fopen("/sdcard/tmp/rec2.264","wb") );
 
-        NetworkIO<BufferList,FileSink> nwk(buflis, rec264, argv[1]);
+        NetworkIO<BufferList&,FileSink&> nwk(buflis, rec264, argv[1]);
         nwk.thread.start(); // run
 
-    user_input(&buflis);
+    user_input(NULL);//(&buflis);
         nwk.thread.stop();
         nwk.thread.join();
 
     } else { // server
         FileSink recnwk( fopen("tmp/feedback.out","wb") );
-        FileSink recenc( fopen("tmp/rec1.264","wb") );
+        FileSink recenc(NULL);//( fopen("tmp/rec1.264","wb") );
 
         Encoder<BufferList> enc(buflis, recenc.ofp);
-        NetworkIO<BufferList,FileSink> nwk(buflis, recnwk, NULL);
+        NetworkIO<BufferList&,FileSink&> nwk(buflis, recnwk, NULL);
         enc.thread.start(); // run
         nwk.thread.start(); // run
 
-    user_input(&buflis);
+    user_input(NULL);//(&buflis);
         enc.thread.stop();
         nwk.thread.stop();
         nwk.thread.join();

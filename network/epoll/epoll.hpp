@@ -42,17 +42,16 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         if (fd_ >= 0)
             ::close(fd_);
     }
-    EPollSocket() { fd_=-1; events_=0; }
-    //EPollSocket(XData& xd) : xdata_(xd) { fd_=-1; events_=0; }
-    //EPollSocket(int xfd, XData& xd) : xdata_(xd) { fd_ = xfd; events_=0; }
+    EPollSocket(int ofd=-1) { fd_=ofd; events_=0; }
 
     XData& xdata() { return xdata_; }
     int type() const { return Type; }
 
     int ok(int msk) const { return (events_ & msk); } // bool
+    unsigned events() const { return events_; }
+
     int fd() const { return fd_; }
     bool is_open() const { return fd_>=0; }
-    unsigned events() const { return events_; }
     void close() {
         if (is_open()) {
             ::close(fd_);
@@ -136,14 +135,6 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         return 1;
     }
 
-//protected:
-    void init_with_fd(int fd) {
-        if (fd_ >= 0)
-            ERR_EXIT("init_with_fd");
-        events_ = 0;
-        fd_ = fd;
-    }
-
     ThisType* fcntl(int msk, bool yn)
     {
         int flags = ::fcntl(fd_, F_GETFL);
@@ -177,6 +168,21 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         return this;
     }
 
+    EPollSocket(EPollSocket&& rhs) {
+        fd_ = rhs.fd_; rhs.fd_ = -1;
+        events_ = rhs.events_; rhs.events_ = 0;
+    }
+    EPollSocket& operator=(EPollSocket&& rhs) {
+        if (this != &rhs) {
+            if (fd_ >= 0) {
+                ::close(fd_);
+            }
+            fd_ = rhs.fd_; rhs.fd_ = -1;
+            events_ = rhs.events_; rhs.events_ = 0;
+        }
+        return *this;
+    }
+private:
     friend struct epoll_socket_access_helper;
     int fd_;
     uint32_t events_;
@@ -241,13 +247,15 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         sa.sin_port = htons(port);
         return sa;
     }
-
 private:
     virtual void on_events(Context& ctx, int evts) {
         //DEBUG("process_events events %x, %d", evts, (int)ok(EPOLLOUT));
         events_ = evts;
         ctx.process_io(*this);
     }
+private:
+    EPollSocket(EPollSocket&);
+    EPollSocket& operator=(EPollSocket&);
 };
 
 struct EPoll : boost::noncopyable
@@ -351,7 +359,6 @@ struct Stream_service
             return context->do_recv(sk);
         }
         if (sk.ok(EPOLLOUT)) {
-            DEBUG("EPOLLOUT");
             return context->do_send(sk);
         }
     }
@@ -372,7 +379,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
 {
     //typedef IO_objects<TxBuffers> Base;
     typedef NetworkIO<TxBuffers,RxOutput> This;
-    enum { recvbuf_size=RxOutput::max_packet_size };
+    enum { recvbuf_size=std::decay<RxOutput>::type::max_packet_size };
     //typedef array_buf<recvbuf_size> Recvbuffer;
     typedef malloc_buf<recvbuf_size> Recvbuffer;
 
@@ -380,9 +387,9 @@ struct NetworkIO //: IO_objects<TxBuffers>
     typedef EPollSocket<StreamSocket,SOCK_STREAM,This> ListenSocket;
     typedef EPollSocket<Recvbuffer  ,SOCK_DGRAM ,This> DatagramSocket;
 
-    TxBuffers& txbufs;
-    typename TxBuffers::iterator tx_iter_; // = txbufs.end();
-    RxOutput& rxout;
+    TxBuffers txbufs;
+    typename std::decay<TxBuffers>::type::iterator tx_iter_; // = txbufs.end();
+    RxOutput rxout;
 
     //DatagramSocket udp_;
     ListenSocket lisk_;
@@ -394,6 +401,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
     Thread<NetworkIO> thread;
 
     ~NetworkIO() {
+        DEBUG("");
         do_close(lisk_);
         do_close(streamsk_);
     }
@@ -405,6 +413,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
         , streamio_(*this)
         , thread(*this, "NetworkIO")
     {
+        DEBUG("");
         tx_iter_ = txbufs.end();
 #if 1
         if (connect_ip) {
@@ -443,6 +452,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
                 xif->on_events(*this, evts[i].events);
             }
         }
+        DEBUG("");
     }
     // std::tuple<>
     void process_io(ListenSocket& lisk) { listenio_.process_io(lisk); }
@@ -455,8 +465,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
         if (streamsk_.is_open()) {
             ERR_EXIT("already open");
         }
-        streamsk_.init_with_fd(sk.fd());
-        sk.fd_ = -1; // std::move
+        streamsk_ = std::move(sk); // streamsk_.init_with_fd(sk.fd()); sk.fd_ = -1; // std::move
         streamio_.setup(streamsk_);
         return &streamsk_;
     }
@@ -466,8 +475,8 @@ struct NetworkIO //: IO_objects<TxBuffers>
         do_close(sk);
     }
     template <typename Sock> void do_close(Sock& sk) {
+        LOGE("close, epoll.del %d", sk.fd());
         if (sk.is_open()) {
-            LOGE("close, epoll.del %d", sk.fd());
             epoll.del(sk);
             sk.close();
         }
@@ -484,6 +493,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
             if (rb.size() < 4+len4) {
                 break;
             }
+            DEBUG("");//("h:size %u %u", 4+len4, rb.size());
             *u4 = htonl(0x00000001); // p += 4; //len4 -= sizeof(uint32_t);
 
             rxout(p, 4+len4); // fwrite(p, 4+len4, 1, out_fp);
@@ -519,6 +529,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
             }
             if (n == 0) {
                 BOOST_ASSERT(!sk.ok(EPOLLOUT));
+                DEBUG("need EPOLLOUT");
                 break;
             }
             tx_iter_->consume(n);
