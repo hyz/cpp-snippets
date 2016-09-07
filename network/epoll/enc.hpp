@@ -8,7 +8,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <sys/time.h>
-#include "log.hpp"
+#include "alog.hpp"
 #include "thread.hpp"
 #include "clock.hpp"
 #include "epoll.hpp"
@@ -109,8 +109,8 @@ struct Encoder : boost::noncopyable
                 if (poll_fds[i].revent.event != GM_POLL_READ)
                     continue;
                 if (poll_fds[i].revent.bs_len > BITSTREAM_LEN) {
-                    ERR_MSG("bitstream buffer length is not enough %d, %d\n",
-                        poll_fds[i].revent.bs_len, BITSTREAM_LEN);
+                    LOGE("bitstream buffer length is not enough %d, %d"
+                            , poll_fds[i].revent.bs_len, (int)BITSTREAM_LEN);
                     continue;
                 }
                 multi_bs[i].bindfd = poll_fds[i].bindfd;
@@ -122,11 +122,11 @@ struct Encoder : boost::noncopyable
             
             ret = gm_recv_multi_bitstreams(multi_bs, MAX_BITSTREAM_NUM);
             if (ret < 0) {
-                ERR_MSG("Error return value %d", ret);
+                LOGE("Error return value %d", ret);
             } else {
                 for (int i = 0; i < MAX_BITSTREAM_NUM; i++) {
                     if ((multi_bs[i].retval < 0) && multi_bs[i].bindfd) {
-                        ERR_MSG("CH%d Error to receive bitstream. ret=%d", i, multi_bs[i].retval);
+                        LOGE("CH%d Error to receive bitstream. ret=%d", i, multi_bs[i].retval);
                     } else if (multi_bs[i].retval == GM_SUCCESS) {
                         //DEBUG("<CH%d, mv_len=%d bs_len=%d, keyframe=%d, newbsflag=0x%x>",
                         //    i, multi_bs[i].bs.mv_len, multi_bs[i].bs.bs_len, multi_bs[i].bs.keyframe, multi_bs[i].bs.newbs_flag);

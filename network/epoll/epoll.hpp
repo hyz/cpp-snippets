@@ -14,7 +14,7 @@
 //#include <list>
 #include <vector>
 #include <boost/assert.hpp>
-#include "log.hpp"
+#include "alog.hpp"
 #include "thread.hpp"
 #include "buffer.hpp"
 
@@ -194,15 +194,15 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
             if (errno == EAGAIN) {
                 return 0;
             }
-            ERR_MSG("recv");
+            LOGE("recv");
             return n;
         }
         if (n == 0) {
 #if defined(__arm__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
-            ERR_MSG("recv:CLOSE:EPIPE");
+            LOGE("recv:CLOSE:EPIPE");
 #else
             errno = EPIPE;
-            ERR_MSG("recv:CLOSE:EPIPE");
+            LOGE("recv:CLOSE:EPIPE");
 #endif
             return -1; //int(errno = EPIPE);
         }
@@ -220,7 +220,7 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         if (n <= 0) {
             if (errno == EAGAIN)
                 return 0;
-            ERR_MSG("send");
+            LOGE("send");
             return n;
         }
         return n;
@@ -320,7 +320,7 @@ struct Listen_service
             } else {
                 StreamSocket* newsk = context->new_connection(/*std::move*/tmpsk);
                 if (!newsk) {
-                    ERR_MSG("new_connection");
+                    LOGE("new_connection");
                     tmpsk.close();
                 }
             }
@@ -462,12 +462,12 @@ struct NetworkIO //: IO_objects<TxBuffers>
     }
 
     template <typename Sock> void error(Sock& sk, int ec, char const* ps) {
-        ERR_MSG("%s error: %d", ps, sk.fd());
+        LOGE("%s error: %d", ps, sk.fd());
         do_close(sk);
     }
     template <typename Sock> void do_close(Sock& sk) {
         if (sk.is_open()) {
-            ERR_MSG("close, epoll.del %d", sk.fd());
+            LOGE("close, epoll.del %d", sk.fd());
             epoll.del(sk);
             sk.close();
         }

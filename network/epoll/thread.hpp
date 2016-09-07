@@ -4,7 +4,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <boost/noncopyable.hpp>
-#include "log.hpp"
+#include "alog.hpp"
 
 struct pthread_mutex_type : boost::noncopyable
 {

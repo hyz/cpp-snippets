@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <algorithm>
 #include <boost/range.hpp>
-#include "log.hpp"
+#include "alog.hpp"
 #include "thread.hpp"
 
 struct buffer_ref : boost::iterator_range<char*>

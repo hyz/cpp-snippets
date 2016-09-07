@@ -16,7 +16,7 @@ static char* trim_right(char* s) {
 //char filename[50] = "/mnt/nfs/tmp/rec.264";
 //sprintf(filename, "/mnt/nfs/tmp/ch%d_%dx%d.264", cch_ , gm_system.cap[cch_].dim.width, gm_system.cap[cch_].dim.height);
 
-struct Sink
+struct FileSink
 {
     enum { max_packet_size=BITSTREAM_LEN };
 
@@ -24,12 +24,12 @@ struct Sink
         if (ofp)
             fwrite(p, len, 1, ofp);
     }
-    Sink(FILE* f) {
+    FileSink(FILE* f) {
         ofp = f;
         if (!ofp)
             ofp = stdout;
     }
-    ~Sink() {
+    ~FileSink() {
         if (ofp && ofp != stdout && ofp != stderr) {
             fclose(ofp);
         }
@@ -39,7 +39,7 @@ struct Sink
 
 typedef buffer_list BufferList;
 
-void user_input(BufferList& buflis)
+void user_input(BufferList* buflis)
 {
     //DEBUG("'/help'");
     for (;;) {
@@ -53,53 +53,49 @@ void user_input(BufferList& buflis)
             } else if (strcmp(line,"/exit") == 0 || strcmp(line,"/quit") == 0) {
                 break;
             }
-        } else {
+        } else if (buflis) {
             strcat(line, "\n");
             unsigned len = strlen(line);
-            BufferList::iterator it = buflis.alloc(512);
+            BufferList::iterator it = buflis->alloc(512);
             /*_*/{
                 uint32_t u4 = htonl(len);
                 it->put((char*)&u4, sizeof(uint32_t));
             }
             it->put(line, len);
-            buflis.done(it);
+            buflis->done(it);
         }
     }
 }
+
+static BufferList buflis;
 
 int main(int argc, char* const argv[])
 {
     DEBUG("errno %s", strerror(errno));
     if (argc == 2) { // client
-        Sink rec264( fopen("tmp/rec2.264","wb") );
-        BufferList dummyLis;
+        FileSink rec264( fopen("tmp/rec2.264","wb") );
 
-        NetworkIO<BufferList,Sink> nwk(dummyLis, rec264, argv[1]);
+        NetworkIO<BufferList,FileSink> nwk(buflis, rec264, argv[1]);
         nwk.thread.start(); // run
 
-        user_input(dummyLis);
+    user_input(&buflis);
         nwk.thread.stop();
         nwk.thread.join();
 
-    } else {
-        Sink recnwk( fopen("tmp/feedback.out","wb") );
-        Sink recenc( fopen("tmp/rec1.264","wb") );
-        BufferList buflis;
+    } else { // server
+        FileSink recnwk( fopen("tmp/feedback.out","wb") );
+        FileSink recenc( fopen("tmp/rec1.264","wb") );
 
         Encoder<BufferList> enc(buflis, recenc.ofp);
-        NetworkIO<BufferList,Sink> nwk(buflis, recnwk, NULL);
+        NetworkIO<BufferList,FileSink> nwk(buflis, recnwk, NULL);
         enc.thread.start(); // run
         nwk.thread.start(); // run
 
-        user_input(buflis);
+    user_input(&buflis);
         enc.thread.stop();
         nwk.thread.stop();
         nwk.thread.join();
         enc.thread.join(); // pthread_join
     }
 }
-
-#if defined(__arm__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
-# warning "__arm__ gcc4.4"
-#endif
 
