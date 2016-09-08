@@ -6,17 +6,19 @@
   enum { LOG_ERROR = ANDROID_LOG_ERROR };
   enum { LOG_WARN = ANDROID_LOG_WARN };
   enum { LOG_DEBUG = ANDROID_LOG_DEBUG };
+  enum { LOG_VERBO = ANDROID_LOG_VERBOSE };
 #else
 # if !defined(ALOG_CONSOLE)
 #   define ALOG_CONSOLE
 # endif
-# include <stdio.h>
 # include <stdlib.h>
 # include <string.h> // basename(__FILE__);
-  enum { LOG_ERROR = 3 };
-  enum { LOG_WARN  = 2 };
+  enum { LOG_ERROR = 4 };
+  enum { LOG_WARN  = 3 };
+  enum { LOG_VERBO = 2 };
   enum { LOG_DEBUG = 1 };
 #endif
+# include <stdio.h>
 
 //#if defined(__GCC__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
 //#endif
@@ -54,7 +56,7 @@ template <typename... As> int logfn_(int lev, char const*fname, int ln, char con
     //    case LOG_ERROR: lev=3 ; break;
     //    default: lev=0 ; break;
     //}
-    static char levs[] = { 'X','D','W','E' };
+    static char levs[] = { 'X','D','V','W','E' };
     tag[0] = levs[lev]; //((fp == stderr) ? 'E' : 'D');
     tag[1] = '/';
     fprintf(logsettings<>::fp, fmt, tag, ln, func, c, a... );
@@ -72,6 +74,8 @@ template <typename... As> int logfn_(int lev, char const*fname, int ln, char con
 #undef  LOGE
 #undef  LOGW
 #undef  LOGD
+#undef  LOGV
+#define LOGV(...)           logfn_(LOG_VERBO,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
 #define DEBUG(...)          logfn_(LOG_DEBUG,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
 #define LOGD(...)           logfn_(LOG_DEBUG,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
 #define LOGW(...)           logfn_(LOG_WARN ,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)

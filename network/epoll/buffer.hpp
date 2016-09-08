@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <algorithm>
+#include <boost/noncopyable.hpp>
 #include <boost/range.hpp>
 #include "alog.hpp"
 #include "thread.hpp"
@@ -43,8 +44,13 @@ struct buffer_ref : boost::iterator_range<char*>
     buffer_ref(char* b, char* e, char* e2)
         : boost::iterator_range<char*>(b,e), end_(e2)
     {}
-    buffer_ref(char* nil=0) : boost::iterator_range<char*>(nil,nil), end_(nil) {}
+    buffer_ref(char* p=0) : boost::iterator_range<char*>(p,p), end_(p) {}
 
+        void reserve(unsigned siz) {
+            if (siz > capacity()) {
+                ERR_EXIT("size %u %u", siz, size());
+            }
+        }
     //char* begin() const { return begin_; }
     //char* end() const { return cur_; }
     //unsigned size() const { return end() - begin(); }
@@ -60,11 +66,12 @@ struct buffer_ref : boost::iterator_range<char*>
 };
 
 template <unsigned Capacity>
-struct array_buf : buffer_ref
+struct array_buf : buffer_ref //, boost::noncopyable
 {
-    array_buf() : buffer_ref(&array_[0], &array_[0], &array_[Capacity])
+    enum { Nu32 = (Capacity+3)/4 };
+    array_buf() : buffer_ref((char*)&array_[0], (char*)&array_[0], (char*)&array_[Nu32])
     {}
-    char array_[Capacity];
+    uint32_t array_[Nu32];
 };
 template <unsigned Capacity>
 struct malloc_buf : buffer_ref
@@ -76,13 +83,97 @@ struct malloc_buf : buffer_ref
             b = buffer_ref();
         }
     }
-    malloc_buf()
-        : buffer_ref((char*)::malloc(Capacity))
+    malloc_buf() : buffer_ref((char*)::malloc(Capacity))
     { end_ = begin() + Capacity; }
 };
 
+template <typename Buffer, unsigned BufCount>
+struct cycle_buffer_queue //: private Alloc
+{
+    typedef Buffer* iterator;
+
+    cycle_buffer_queue() {
+        ip_ = begin();
+        ialloc_ = iusing_ = end();
+    }
+    template <typename M> explicit cycle_buffer_queue(M& make) {
+        for (unsigned i=0; i<BufCount; ++i) {
+            make(bufs_[i]); //(char*)malloc(BufSiz);
+        }
+        ip_ = begin();
+        ialloc_ = iusing_ = end();
+    }
+    // ~cycle_buffer_queue() {}
+
+    iterator alloc(unsigned siz) {
+        pthread_mutex_lock_guard lk(mutex_);
+        //DEBUG("buf:alloc: %u %d", ip_-begin(), ip_->stat);
+        if (ip_ == iusing_) {
+            ip_ = incr(ip_);
+            if (ip_ == iusing_)
+                ERR_EXIT("gt1 using");
+        //DEBUG("buf:using:alloc: %u %d", ip_-begin(), ip_->stat);
+        }
+        ip_->consume(ip_->size()); // ip_->stat = EAlloc;
+        ip_->reserve(siz);
+        return (ialloc_ = ip_);
+    }
+
+    iterator wait(unsigned millis) {
+        pthread_mutex_lock_guard lk(mutex_);
+        iterator j = _findusable(ip_, decr(ip_));
+        if (j == end()) {
+            cond_.wait(mutex_, millis);
+            j = _findusable(ip_, decr(ip_));
+        }
+        //DEBUG("buf:wait: %u %d", j-begin(), j->stat);
+        return (iusing_ = j);
+    }
+
+    void done(iterator j) {
+        if (j == ialloc_) {
+            if (ip_ != ialloc_) {
+                ERR_EXIT("fatal %p %p", ip_, ialloc_);
+            }
+            ip_ = incr(j);
+            ialloc_ = end();
+            cond_.signal();
+        } else if (j == iusing_) {
+            iusing_ = end();
+        } else {
+            ERR_EXIT("fatal %p %p %p", j, iusing_, ialloc_);
+        }
+    }
+
+    iterator end() { return begin()+size(); }
+private:
+    iterator begin() { return &bufs_[0]; }
+    bool empty() const { return false; }
+    unsigned size() const { return BufCount; }
+protected:
+    Buffer bufs_[BufCount];
+    iterator ip_, ialloc_, iusing_;
+    pthread_mutex_type mutex_;
+    pthread_cond_type cond_;
+private:
+    iterator last() { return end()-1; }
+    inline iterator incr(iterator i) { return ((++i == end()) ? begin() : i); }
+    inline iterator decr(iterator i) { return ((i == begin()) ? last() : --i); }
+
+    iterator _findusable(iterator p, iterator eop) {
+        for (; p != eop; p = incr(p)) {
+            if (p != ialloc_ && !p->empty())
+                return p;
+        }
+        if (p != ialloc_ && !p->empty())
+            return p;
+        return end();
+    }
+};
+
+#if 0
 template <unsigned BufSiz>
-struct buffer_list_fix
+struct buffer_queue_
 {
     struct statful_buf : buffer_ref {
         statful_buf(char*b, char*c, char*e) : buffer_ref(b,c,e) { stat=0; }
@@ -92,21 +183,21 @@ struct buffer_list_fix
     enum { EAlloc = 0x02, EUsable = 0x04, EUsing = 0x08 };
 
     enum { buffer_size = BufSiz };
-    enum { Bufcount = 2 };
-    statful_buf bufs_[Bufcount];
+    enum { BufCount = 2 };
+    statful_buf bufs_[BufCount];
     pthread_mutex_type mutex_;
     pthread_cond_type cond_;
 
     typedef statful_buf* iterator;
     iterator ip_;
 
-    ~buffer_list_fix() {
-        for (unsigned i=0; i<Bufcount; ++i) {
+    ~buffer_queue_() {
+        for (unsigned i=0; i<BufCount; ++i) {
             free(bufs_[i].begin());
         }
     }
-    buffer_list_fix() {
-        for (unsigned i=0; i<Bufcount; ++i) {
+    buffer_queue_() {
+        for (unsigned i=0; i<BufCount; ++i) {
             char* p = (char*)malloc(BufSiz);
             bufs_[i] = statful_buf(p, p, p+BufSiz);
         }
@@ -161,7 +252,7 @@ struct buffer_list_fix
     }
 
     bool empty() const { return false; }
-    unsigned size() const { return Bufcount; }
+    unsigned size() const { return BufCount; }
     iterator end() { return begin()+size(); }
 private:
     iterator begin() { return &bufs_[0]; }
@@ -169,19 +260,19 @@ private:
     inline iterator incr(iterator i) { return ((++i == end()) ? begin() : i); }
     inline iterator decr(iterator i) { return ((i == begin()) ? last() : --i); }
 
-    //iterator findstat_r(unsigned xe, iterator p, iterator ep) {
-    //    while (p != ep && p->stat != xe) {
+    //iterator findstat_r(unsigned xe, iterator p, iterator eop) {
+    //    while (p != eop && p->stat != xe) {
     //        p = decr(p);
     //    }
     //    return p;
     //}
-    iterator findstat(unsigned xe, iterator p, iterator ep) {
-        while (p != ep && p->stat != xe) {
+    iterator findstat(unsigned xe, iterator p, iterator eop) {
+        while (p != eop && p->stat != xe) {
             p = incr(p);
         }
         return p;
     }
 };
-
+#endif
 #endif // BUFFER_HPP__
 

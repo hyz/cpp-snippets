@@ -58,57 +58,81 @@ struct pthread_cond_type : boost::noncopyable
     }
 };
 
+template <typename ValueType>
+struct BitMask {
+    BitMask() : val_() {}
+
+    void set(unsigned x, bool yn) {
+        if (yn)
+            val_ |= ValueType(1<<x);
+        else
+            val_ &= ~ValueType(1<<x);
+    }
+    bool test(unsigned x) const { return bool(mask(x)); }
+    ValueType mask(unsigned x) const { return (val_ & ValueType(1<<x)); }
+
+    void reset() { val_ = ValueType(); }
+    void reset(ValueType val) { val_ = val; }
+
+    ValueType val_;
+};
+
 template <typename Object>
 struct Thread : boost::noncopyable
 {
     explicit Thread(Object& obj, /*void (Object::*run)(),*/ char const* sym=0)
         : obj_(&obj) {
         debugsym_ = (sym ? sym : "");
-        stopped = created = detached = joined = 0;
+        stopped = 0; //created = detached = joined = 0;
     }
     ~Thread() {
         join();
     }
 
     void stop() {
-        stopped = 1;
-        DEBUG("%s %d:%s", debugsym_, __LINE__,__FUNCTION__);
-        // if (has_thread_stop(obj_)) { obj_->thread_stop(); }
+        stopped = 1; // msk_.set(Xstopped, 1)
+        DEBUG("%s:%u %u", debugsym_, (unsigned)pthread_, (unsigned)pthread_self());
     }
     int detach() {
-        detached = 1;
+        msk_.set(Xdetached, 1); // detached = 1;
         return pthread_detach(pthread_);
     }
 
     int join(void** retval = 0)
     {
-        if (!created || detached || joined) {
-            DEBUG("%s %d:%s not joinable %d %d %d", debugsym_, __LINE__,__FUNCTION__,int(created),int(detached),int(joined));
+        if (!msk_.test(Xcreated) || msk_.test(Xdetached) || msk_.test(Xjoined)) { //(!created || detached || joined)
+            int created = msk_.test(Xcreated);
+            int detached = msk_.test(Xdetached);
+            int joined = msk_.test(Xjoined);
+            DEBUG("%s not joinable: c %d d %d j %d", debugsym_, created,detached,joined);
             return 0;
         }
-        DEBUG("%s %d:%s stopped %d", debugsym_, __LINE__,__FUNCTION__, int(stopped));
+        DEBUG("%s stopped=%d", debugsym_, int(stopped));
         int ec = pthread_join(pthread_, retval);
         if (ec) {
-            ERR_EXIT("%s %d:%s pthread_join", debugsym_, __LINE__,__FUNCTION__);
+            ERR_EXIT("%s pthread_join", debugsym_);
         }
-        joined = 1;
-        DEBUG("%s %d:%s [OK]", debugsym_, __LINE__,__FUNCTION__);
+        msk_.set(Xjoined, 1); // joined = 1;
+        DEBUG("%s:%u [OK]", debugsym_, unsigned(pthread_));
         return 0;
     }
 
     int start() {
         int ec = pthread_create(&pthread_,NULL, &sfun, this); //pthread_self;
         if (ec) {
-            ERR_EXIT("%s %d:%s pthread_create", debugsym_, __LINE__,__FUNCTION__);
+            ERR_EXIT("%s pthread_create", debugsym_);
         }
-        created = 1;
-        DEBUG("%s %d:%s [OK]", debugsym_, __LINE__,__FUNCTION__);
+        msk_.set(Xcreated, 1); // created = 1;
+        DEBUG("%s:%u [OK]", debugsym_, unsigned(pthread_));
         return 0; //pthread_;
     }
 
-    bool stopped, created, detached, joined;
+    bool stopped; //, created, detached, joined;
 
+    //TODO: movable
 private:
+    enum { Xcreated=1, Xdetached, Xjoined };
+    BitMask<unsigned char> msk_;
     Object* obj_;
     pthread_t pthread_;
     char const* debugsym_;

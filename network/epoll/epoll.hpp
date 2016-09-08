@@ -1,9 +1,11 @@
 #ifndef EPOLL_HPP__
 #define EPOLL_HPP__
 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -15,6 +17,7 @@
 #include <vector>
 #include <boost/assert.hpp>
 #include "alog.hpp"
+#include "clock.hpp"
 #include "thread.hpp"
 #include "buffer.hpp"
 
@@ -28,7 +31,7 @@ struct epoll_socket_access_helper {
     template <typename T> static T* init(T& o, int fd, struct sockaddr_in&) {
         o.fd_=fd;
         o.events_ = 0;
-        return o.nonblocking(); // return &o;
+        return o.tcp_nodelay()->nonblocking(); // return &o;
     }
 };
 template <typename XData, int Type, typename Context>
@@ -125,6 +128,7 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
                 return 0;
             ERR_EXIT("accept: %d", afd);
         }
+
         epoll_socket_access_helper::init(sk, afd, sa);
 
         {
@@ -155,6 +159,11 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         return this;
     }
     ThisType* nonblocking() { return fcntl(O_NONBLOCK, true); }
+    ThisType* tcp_nodelay() {
+        int on=1;
+        ::setsockopt(fd_, IPPROTO_TCP,TCP_NODELAY, (void*)&on,sizeof(on));
+        return this;
+    }
 
     ThisType* open() {
         if (is_open()) {
@@ -339,9 +348,8 @@ struct Listen_service
         if (lisk.listen(ip, port) < 0) {
             ERR_EXIT("listen");
         }
-        if (lisk.fcntl(O_NONBLOCK, true) < 0) {
-            ERR_EXIT("fcntl");
-        }
+        lisk.nonblocking();
+
         context->epoll.add(lisk, EPOLLIN);
         DEBUG("epoll.add %d lisk", lisk.fd());
     }
@@ -364,9 +372,7 @@ struct Stream_service
     }
 
     void setup(StreamSocket& sk) {
-        if (sk.fcntl(O_NONBLOCK, true) < 0) {
-            ERR_EXIT("listen:fcntl");
-        }
+        sk.tcp_nodelay()->nonblocking();
         context->epoll.add(sk, EPOLLOUT|EPOLLIN);
         DEBUG("epoll.add %d streamsk", sk.fd());
     }
@@ -379,9 +385,10 @@ struct NetworkIO //: IO_objects<TxBuffers>
 {
     //typedef IO_objects<TxBuffers> Base;
     typedef NetworkIO<TxBuffers,RxOutput> This;
-    enum { recvbuf_size=std::decay<RxOutput>::type::max_packet_size };
+    //enum { recvbuf_size=std::decay<RxOutput>::type::max_packet_size };
     //typedef array_buf<recvbuf_size> Recvbuffer;
-    typedef malloc_buf<recvbuf_size> Recvbuffer;
+    //typedef malloc_buf<recvbuf_size> Recvbuffer;
+    typedef typename std::decay<RxOutput>::type::Recvbuffer Recvbuffer;
 
     typedef EPollSocket<Recvbuffer  ,SOCK_STREAM,This> StreamSocket;
     typedef EPollSocket<StreamSocket,SOCK_STREAM,This> ListenSocket;
@@ -483,31 +490,38 @@ struct NetworkIO //: IO_objects<TxBuffers>
     }
 
     void process_recvd_data(Recvbuffer& rb) {
-        while (rb.size() >= sizeof(uint32_t)) {
-            char* p = rb.begin();
-            uint32_t* u4 = (uint32_t*)p;
-            if ((ptrdiff_t)p % sizeof(uint32_t) || (void*)u4 != (void*)p)
-                ERR_EXIT("process_recvd_data %p %p", p, u4);
-
-            unsigned len4 = ntohl(*u4);
-            if (rb.size() < 4+len4) {
+        while (!rb.empty()) {
+            int len = rxout(rb, txbufs); // fwrite(p, len4, 1, out_fp);
+            if (len > 0) {
+                if (len > (int)rb.size())
+                    ERR_EXIT("%d %u", len, rb.size());
+                rb.consume(len);
+            } else
                 break;
-            }
-            DEBUG("");//("h:size %u %u", 4+len4, rb.size());
-            *u4 = htonl(0x00000001); // p += 4; //len4 -= sizeof(uint32_t);
-
-            rxout(p, 4+len4); // fwrite(p, 4+len4, 1, out_fp);
-            rb.consume(4+len4);
         }
+        //while (rb.size() >= sizeof(uint32_t)) {
+        //    char* p = rb.begin();
+        //    uint32_t* u4 = (uint32_t*)p;
+        //    if ((ptrdiff_t)p % sizeof(uint32_t) || (void*)u4 != (void*)p)
+        //        ERR_EXIT("process_recvd_data %p %p", p, u4);
+
+        //    unsigned len4 = 4 + ntohl(*u4);
+        //    if (rb.size() < len4) {
+        //        break;
+        //    }
+        //    //DEBUG("");//("h:size %u %u", len4, rb.size());
+        //    *u4 = htonl(0x00000001);
+
+        //    rxout(p, len4, txbufs); // fwrite(p, len4, 1, out_fp);
+        //    rb.consume(len4);
+        //}
     }
 
     template <typename Sock> void do_recv(Sock& sk) {
         while (sk.ok(EPOLLIN)) {
             Recvbuffer& rb = sk.xdata();
             typename Recvbuffer::range sp = rb.spaces();
-            if (sp.size() < 1024) {
-                ERR_EXIT("bufsiz<1024: %u %u", sp.size(), rb.size());
-            }
+            ERR_EXIT_IF(sp.empty(),"%u %u", sp.size(), rb.size());
             int n = sk.recv(sp.begin(), sp.end());//(, sa_peer_);
             if (n < 0) {
                 return error(sk, errno, __FUNCTION__);

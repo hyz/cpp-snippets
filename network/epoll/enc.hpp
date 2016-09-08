@@ -13,19 +13,20 @@
 #include "clock.hpp"
 #include "epoll.hpp"
 #include "buffer.hpp"
+#include "clock.hpp"
 #ifndef NOENC
 # include "gmlib.h"
 #endif
 
 enum { BITSTREAM_LEN  = (1920 * 1080 * 3 / 2) }; // (720 * 576 * 3 / 2)
 
-template <typename BufferList>
+template <typename BufferQueue>
 struct Encoder : boost::noncopyable
 {
     enum { MAX_BITSTREAM_NUM = 1 };
 
     Thread<Encoder> thread;
-    BufferList& buflis;
+    BufferQueue buflis;
 #ifndef NOENC
     gm_system_t gm_system;
     void *capture_object;
@@ -41,7 +42,7 @@ struct Encoder : boost::noncopyable
         /// fclose(record_file);
     }
 #endif
-    Encoder(BufferList& lis, FILE* recfile=0)
+    Encoder(BufferQueue& lis, FILE* recfile=0)
         : thread(*this, "Encode")
         , buflis(lis)
     {
@@ -87,7 +88,7 @@ struct Encoder : boost::noncopyable
 
         gm_pollfd_t poll_fds[MAX_BITSTREAM_NUM];
         gm_enc_multi_bitstream_t multi_bs[MAX_BITSTREAM_NUM];
-        typename BufferList::iterator bufs[MAX_BITSTREAM_NUM];
+        typename std::decay<BufferQueue>::type::iterator bufs[MAX_BITSTREAM_NUM];
 
         memset(poll_fds, 0, sizeof(poll_fds));
         for (int i = 0; i < MAX_BITSTREAM_NUM; i++) {
@@ -148,7 +149,6 @@ struct Encoder : boost::noncopyable
         gm_delete_groupfd(groupfd);
 #endif
     }
-
     static void replace_startbytes_with_len4(char* bs_buf, uint32_t bs_len4) {
         if ((ptrdiff_t)bs_buf % 4) {
             ERR_EXIT("bs_buf addr %p", bs_buf);
