@@ -122,7 +122,7 @@ struct cycle_buffer_queue //: private Alloc
     iterator wait(unsigned millis) {
         pthread_mutex_lock_guard lk(mutex_);
         iterator j = _findusable(ip_, decr(ip_));
-        if (j == end()) {
+        if (j == end() && millis > 0) {
             cond_.wait(mutex_, millis);
             j = _findusable(ip_, decr(ip_));
         }

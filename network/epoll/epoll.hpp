@@ -98,7 +98,7 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         if (rc < 0) {
             ERR_EXIT("bind");
         }
-        DEBUG("bind %s:%d", ip ? ip : "*", (int)port);
+        DEBUG("%s:%d", ip ? ip : "*", (int)port);
         return rc;
     }
     int listen(const char* ip, unsigned short port, int backlog=128) {
@@ -310,7 +310,7 @@ private:
 };
 
 template <typename Context, typename ListenSocket>
-struct Listen_service
+struct ListenService
 {
     Context* context;
     //if (sk.type() == SOCK_STREAM) {
@@ -354,11 +354,11 @@ struct Listen_service
         DEBUG("epoll.add %d lisk", lisk.fd());
     }
 
-    Listen_service(Context& c) :context(&c) {}
+    ListenService(Context& c) :context(&c) {}
 };
 
 template <typename Context, typename StreamSocket>
-struct Stream_service
+struct StreamService
 {
     Context* context;
 
@@ -377,32 +377,32 @@ struct Stream_service
         DEBUG("epoll.add %d streamsk", sk.fd());
     }
 
-    Stream_service(Context& c) :context(&c) {}
+    StreamService(Context& c) :context(&c) {}
 };
 
-template <typename TxBuffers, typename RxOutput>
-struct NetworkIO //: IO_objects<TxBuffers>
+template <typename TXQueue, typename RXSink>
+struct NetworkIO //: IO_objects<TXQueue>
 {
-    //typedef IO_objects<TxBuffers> Base;
-    typedef NetworkIO<TxBuffers,RxOutput> This;
-    //enum { recvbuf_size=std::decay<RxOutput>::type::max_packet_size };
+    //typedef IO_objects<TXQueue> Base;
+    typedef NetworkIO<TXQueue,RXSink> This;
+    //enum { recvbuf_size=std::decay<RXSink>::type::max_packet_size };
     //typedef array_buf<recvbuf_size> Recvbuffer;
     //typedef malloc_buf<recvbuf_size> Recvbuffer;
-    typedef typename std::decay<RxOutput>::type::Recvbuffer Recvbuffer;
+    typedef typename std::decay<RXSink>::type::Recvbuffer Recvbuffer;
 
     typedef EPollSocket<Recvbuffer  ,SOCK_STREAM,This> StreamSocket;
     typedef EPollSocket<StreamSocket,SOCK_STREAM,This> ListenSocket;
     typedef EPollSocket<Recvbuffer  ,SOCK_DGRAM ,This> DatagramSocket;
 
-    TxBuffers txbufs;
-    typename std::decay<TxBuffers>::type::iterator tx_iter_; // = txbufs.end();
-    RxOutput rxout;
+    TXQueue txqueue;
+    typename std::decay<TXQueue>::type::iterator tx_iter_; // = txqueue.end();
+    RXSink rxsink;
 
-    //DatagramSocket udp_;
+    //DatagramSocket dgram_;
     ListenSocket lisk_;
-    Listen_service<This,ListenSocket> listenio_;
+    ListenService<This,ListenSocket> listenio_;
     StreamSocket streamsk_;
-    Stream_service<This,StreamSocket> streamio_;
+    StreamService<This,StreamSocket> streamio_;
 
     EPoll epoll;
     Thread<NetworkIO> thread;
@@ -413,15 +413,14 @@ struct NetworkIO //: IO_objects<TxBuffers>
         do_close(streamsk_);
     }
 
-    NetworkIO(TxBuffers& txs, RxOutput& rxo, char const* connect_ip = 0, short port=9990)
-        : txbufs(txs) , rxout(rxo)
-        //, udp_(), streamsk_()
+    NetworkIO(TXQueue& txs, RXSink& rxo, char const* connect_ip = 0, short port=9990)
+        : txqueue(txs) , rxsink(rxo)
+        //, dgram_(), streamsk_()
         , listenio_(*this)
         , streamio_(*this)
         , thread(*this, "NetworkIO")
     {
-        DEBUG("");
-        tx_iter_ = txbufs.end();
+        tx_iter_ = txqueue.end();
 #if 1
         if (connect_ip) {
             streamsk_.connect(connect_ip, port);
@@ -441,15 +440,15 @@ struct NetworkIO //: IO_objects<TxBuffers>
     void run() // thread func
     {
         while (!thread.stopped) {
-            if (tx_iter_ == txbufs.end()) {
-                tx_iter_ = txbufs.wait(10);
+            if (tx_iter_ == txqueue.end()) {
+                tx_iter_ = txqueue.wait(0);
             }
-            if (tx_iter_ != txbufs.end()) {
-                do_send(streamsk_); // do_recv(udp_);
+            if (tx_iter_ != txqueue.end()) {
+                do_send(streamsk_); // do_recv(dgram_);
             }
 
             struct epoll_event evts[16];
-            int nready = epoll.wait(evts, sizeof(evts)/sizeof(*evts), 50);
+            int nready = epoll.wait(evts, sizeof(evts)/sizeof(*evts), 5);
             if (nready < 0) {
                 ERR_EXIT("epoll_wait");
             }
@@ -491,7 +490,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
 
     void process_recvd_data(Recvbuffer& rb) {
         while (!rb.empty()) {
-            int len = rxout(rb, txbufs); // fwrite(p, len4, 1, out_fp);
+            int len = rxsink(rb, txqueue); // fwrite(p, len4, 1, out_fp);
             if (len > 0) {
                 if (len > (int)rb.size())
                     ERR_EXIT("%d %u", len, rb.size());
@@ -512,7 +511,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
         //    //DEBUG("");//("h:size %u %u", len4, rb.size());
         //    *u4 = htonl(0x00000001);
 
-        //    rxout(p, len4, txbufs); // fwrite(p, len4, 1, out_fp);
+        //    rxsink(p, len4, txqueue); // fwrite(p, len4, 1, out_fp);
         //    rb.consume(len4);
         //}
     }
@@ -536,7 +535,7 @@ struct NetworkIO //: IO_objects<TxBuffers>
     }
     template <typename Sock> void do_send(Sock& sk) {
         //DEBUG("", sk.is_open(), sk.events() );
-        while (sk.ok(EPOLLOUT) && tx_iter_ != txbufs.end()) {
+        while (sk.ok(EPOLLOUT) && tx_iter_ != txqueue.end()) {
             int n = sk.send(tx_iter_->begin(), tx_iter_->end());//(sa_peer_);
             if (n < 0) {
                 return error(sk, errno, __FUNCTION__);
@@ -548,28 +547,27 @@ struct NetworkIO //: IO_objects<TxBuffers>
             }
             tx_iter_->consume(n);
             if (tx_iter_->empty()) {
-                txbufs.done(tx_iter_);
-                tx_iter_ = txbufs.end();
+                txqueue.done(tx_iter_);
+                tx_iter_ = txqueue.end();
             }
         }
     }
 };
 
 template <typename Context, typename DatagramSocket>
-struct IO_datagram
+struct DatagramService
 {
     Context* context;
-    bool established_;
 
-    IO_datagram& send(DatagramSocket& sk) {
-        if (established()) {
+    DatagramService& send(DatagramSocket& sk) {
+        if (1/*established()*/) {
             while (sk.ok(EPOLLIN)) {
                 ;
             }
             while (sk.ok(EPOLLOUT)) {
                 ;
             }
-            //if (tx_iter_ == txbufs.end())
+            //if (tx_iter_ == txqueue.end())
             //    break;
             //int n = sk.send(tx_iter_->begin(), tx_iter_->end());//(sa_peer_);
             //if (n < 0) {
@@ -577,8 +575,8 @@ struct IO_datagram
             //}
             //tx_iter_->consume(n);
             //if (tx_iter_->empty()) {
-            //    txbufs.done(tx_iter_);
-            //    tx_iter_ = txbufs.end();
+            //    txqueue.done(tx_iter_);
+            //    tx_iter_ = txqueue.end();
             //}
         } else {
             if (sk.ok(EPOLLIN)) {
@@ -588,13 +586,11 @@ struct IO_datagram
         return *this;
     }
 
-    bool established() const { return established_; }
-
     void connect(DatagramSocket& sk, const char* ip, unsigned short port) {
         if (sk.connect(ip,port) < 0) {
             ERR_EXIT("connect");
         } else {
-            established_ = 1;
+            //established_ = 1;
             //sa_peer_ = make_sa(ip,port);
             sk.fcntl(O_NONBLOCK, true);
             context->epoll_add(sk, EPOLLIN|EPOLLOUT);
@@ -606,7 +602,7 @@ struct IO_datagram
         if (sk.bind(ip,port) < 0) {
             ERR_EXIT("bind");
         } else {
-            established_ = 0;
+            //established_ = 0;
             //sa_peer_ = make_sa(ip,port);
             sk.fcntl(O_NONBLOCK, true);
             context->epoll_add(sk, EPOLLIN|EPOLLOUT);
@@ -614,7 +610,46 @@ struct IO_datagram
         }
     }
 
-    IO_datagram(Context& c) :context(&c) {}
+    DatagramService(Context& c) :context(&c) {}
+
+#if 0
+    template <typename Sock> void do_recv(Sock& sk) {
+        while (sk.ok(EPOLLIN)) {
+            Recvbuffer& rb = sk.xdata();
+            typename Recvbuffer::range sp = rb.spaces();
+            ERR_EXIT_IF(sp.empty(),"%u %u", sp.size(), rb.size());
+            int n = sk.recv(sp.begin(), sp.end());//(, sa_peer_);
+            if (n < 0) {
+                return error(sk, errno, __FUNCTION__);
+            }
+            if (n == 0) {
+                BOOST_ASSERT(!sk.ok(EPOLLIN));
+                break;
+            }
+            rb.commit(sp, n);
+            process_recvd_data(rb);
+        }
+    }
+    template <typename Sock> void do_send(Sock& sk) {
+        //DEBUG("", sk.is_open(), sk.events() );
+        while (sk.ok(EPOLLOUT) && tx_iter_ != txqueue.end()) {
+            int n = sk.send(tx_iter_->begin(), tx_iter_->end());//(sa_peer_);
+            if (n < 0) {
+                return error(sk, errno, __FUNCTION__);
+            }
+            if (n == 0) {
+                BOOST_ASSERT(!sk.ok(EPOLLOUT));
+                DEBUG("need EPOLLOUT");
+                break;
+            }
+            tx_iter_->consume(n);
+            if (tx_iter_->empty()) {
+                txqueue.done(tx_iter_);
+                tx_iter_ = txqueue.end();
+            }
+        }
+    }
+#endif
 };
 
 #endif // EPOLL_HPP__

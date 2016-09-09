@@ -123,6 +123,7 @@ struct Thread : boost::noncopyable
             ERR_EXIT("%s pthread_create", debugsym_);
         }
         msk_.set(Xcreated, 1); // created = 1;
+        //gettid();
         DEBUG("%s:%u [OK]", debugsym_, unsigned(pthread_));
         return 0; //pthread_;
     }

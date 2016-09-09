@@ -136,7 +136,6 @@ struct Encoder : boost::noncopyable
                             fflush(record_file);
                         }
 
-                        replace_startbytes_with_len4(multi_bs[i].bs.bs_buf, multi_bs[i].bs.bs_len - 4);
                         bufs[i]->commit(*bufs[i], multi_bs[i].bs.bs_len);
                         buflis.done(bufs[i]);
                         bufs[i] = buflis.alloc(BITSTREAM_LEN);
@@ -148,23 +147,6 @@ struct Encoder : boost::noncopyable
         gm_apply(groupfd);
         gm_delete_groupfd(groupfd);
 #endif
-    }
-    static void replace_startbytes_with_len4(char* bs_buf, uint32_t bs_len4) {
-        if ((ptrdiff_t)bs_buf % 4) {
-            ERR_EXIT("bs_buf addr %p", bs_buf);
-        }
-        uint32_t* u4 = (uint32_t*)bs_buf;
-        if (ntohl(*u4) != 0x00000001)
-            ERR_EXIT("bs_buf startbytes %08x", *u4);
-        *u4 = htonl(bs_len4);
-
-        {
-            static unsigned maxlen4 = 0;
-            if (bs_len4 > maxlen4) {
-                maxlen4=bs_len4;
-                fprintf(stderr, "max bs_len4 %u\n", maxlen4);
-            }
-        }
     }
 };
 

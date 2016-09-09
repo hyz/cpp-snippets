@@ -31,17 +31,16 @@ struct clock_realtime_type {
         duration operator-(time_point const& rhs) const {
             return duration{ int64_t(tv_sec - rhs.tv_sec)*1000000 + (tv_usec - rhs.tv_usec) };
         }
-        time_point(time_t sec, unsigned usec) { tv_sec = sec; tv_usec = usec; }
+        time_point(time_t sec, unsigned usec=0) { tv_sec = sec; tv_usec = usec; }
     };
     static time_point midnight() {
         return time_point(midnight_time(), 0);
     }
     static time_point now() {
         time_point tp(0,0);
-        gettimeofday(&tp,NULL);
-        //DEBUG("%u", unsigned());
+        gettimeofday(&tp,NULL); //clock_gettime(CLOCK_REALTIME, &tp);
+        //DEBUG("gettimeofday %u %u", tp.tv_sec, tp.tv_usec);
         return tp;
-        //clock_gettime(CLOCK_REALTIME, &tp);
     }
     static time_point epoch() { return time_point(0,0); }
 
@@ -51,6 +50,7 @@ struct clock_realtime_type {
             struct tm tm;
             time_t t = time(0);
             localtime_r(&t, &tm);
+            //DEBUG("tm %u %u:%u:%u", (unsigned)t, tm.tm_hour,tm.tm_min,tm.tm_sec);
             tm.tm_sec = 0;
             tm.tm_min = 0;
             tm.tm_hour = 0;
