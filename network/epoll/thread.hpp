@@ -82,7 +82,7 @@ struct Thread : boost::noncopyable
 {
     explicit Thread(Object& obj, /*void (Object::*run)(),*/ char const* sym=0)
         : obj_(&obj) {
-        debugsym_ = (sym ? sym : "");
+        debugsym = (sym ? sym : "");
         stopped = 0; //created = detached = joined = 0;
     }
     ~Thread() {
@@ -91,7 +91,7 @@ struct Thread : boost::noncopyable
 
     void stop() {
         stopped = 1; // msk_.set(Xstopped, 1)
-        DEBUG("%s:%u %u", debugsym_, (unsigned)pthread_, (unsigned)pthread_self());
+        DEBUG("%s:%u %u", debugsym, (unsigned)pthread_, (unsigned)pthread_self());
     }
     int detach() {
         msk_.set(Xdetached, 1); // detached = 1;
@@ -104,31 +104,32 @@ struct Thread : boost::noncopyable
             int created = msk_.test(Xcreated);
             int detached = msk_.test(Xdetached);
             int joined = msk_.test(Xjoined);
-            DEBUG("%s not joinable: c %d d %d j %d", debugsym_, created,detached,joined);
+            DEBUG("%s not joinable: c %d d %d j %d", debugsym, created,detached,joined);
             return 0;
         }
-        DEBUG("%s stopped=%d", debugsym_, int(stopped));
+        DEBUG("%s stopped=%d", debugsym, int(stopped));
         int ec = pthread_join(pthread_, retval);
         if (ec) {
-            ERR_EXIT("%s pthread_join", debugsym_);
+            ERR_EXIT("%s pthread_join", debugsym);
         }
         msk_.set(Xjoined, 1); // joined = 1;
-        DEBUG("%s:%u [OK]", debugsym_, unsigned(pthread_));
+        DEBUG("%s:%u [OK]", debugsym, unsigned(pthread_));
         return 0;
     }
 
     int start() {
         int ec = pthread_create(&pthread_,NULL, &sfun, this); //pthread_self;
         if (ec) {
-            ERR_EXIT("%s pthread_create", debugsym_);
+            ERR_EXIT("%s pthread_create", debugsym);
         }
         msk_.set(Xcreated, 1); // created = 1;
         //gettid();
-        DEBUG("%s:%u [OK]", debugsym_, unsigned(pthread_));
+        DEBUG("%s:%u [OK]", debugsym, unsigned(pthread_));
         return 0; //pthread_;
     }
 
     bool stopped; //, created, detached, joined;
+    char const* debugsym;
 
     //TODO: movable
 private:
@@ -136,7 +137,6 @@ private:
     BitMask<unsigned char> msk_;
     Object* obj_;
     pthread_t pthread_;
-    char const* debugsym_;
 
 private: //typedef void (Object::*objrun_t)();
     static void* sfun(void* a) {

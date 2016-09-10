@@ -313,16 +313,11 @@ template <typename Context, typename ListenSocket>
 struct ListenService
 {
     Context* context;
-    //if (sk.type() == SOCK_STREAM) {
-        //if (sk.state() == EnumConnecting) {
+    /// ASYNC CONNECT
+    // (SOCK_STREAM) {
         //    int y;
-        //    if (::getsockopt(lisk.fd(), SOL_SOCKET, SO_ERROR, &y, sizeof(y)) < 0) {
-        //        ERR_EXIT("getsockopt");
-        //    }
-        //    if (y != 0) {
-        //        return error(sk); //ERR_EXIT("getsockopt SO_ERROR %d", y);
-        //    }
-        //}
+        //    if (::getsockopt(lisk.fd(), SOL_SOCKET, SO_ERROR, &y, sizeof(y)) < 0) {}
+        //    if (y != 0) {}
     //}
 
     void process_io(ListenSocket& lisk) {
@@ -383,9 +378,7 @@ struct StreamService
 template <typename TXQueue, typename RXSink>
 struct NetworkIO //: IO_objects<TXQueue>
 {
-    //typedef IO_objects<TXQueue> Base;
     typedef NetworkIO<TXQueue,RXSink> This;
-    //enum { recvbuf_size=std::decay<RXSink>::type::max_packet_size };
     //typedef array_buf<recvbuf_size> Recvbuffer;
     //typedef malloc_buf<recvbuf_size> Recvbuffer;
     typedef typename std::decay<RXSink>::type::Recvbuffer Recvbuffer;
@@ -398,7 +391,7 @@ struct NetworkIO //: IO_objects<TXQueue>
     typename std::decay<TXQueue>::type::iterator tx_iter_; // = txqueue.end();
     RXSink rxsink;
 
-    //DatagramSocket dgram_;
+    //DatagramSocket dgramsk_;
     ListenSocket lisk_;
     ListenService<This,ListenSocket> listenio_;
     StreamSocket streamsk_;
@@ -413,9 +406,9 @@ struct NetworkIO //: IO_objects<TXQueue>
         do_close(streamsk_);
     }
 
-    NetworkIO(TXQueue& txs, RXSink& rxo, char const* connect_ip = 0, short port=9990)
-        : txqueue(txs) , rxsink(rxo)
-        //, dgram_(), streamsk_()
+    NetworkIO(TXQueue& txq, RXSink& rxs, char const* connect_ip = 0, short port=9990)
+        : txqueue(txq) , rxsink(rxs)
+        //, dgramsk_(), streamsk_()
         , listenio_(*this)
         , streamio_(*this)
         , thread(*this, "NetworkIO")
@@ -440,11 +433,13 @@ struct NetworkIO //: IO_objects<TXQueue>
     void run() // thread func
     {
         while (!thread.stopped) {
-            if (tx_iter_ == txqueue.end()) {
-                tx_iter_ = txqueue.wait(0);
-            }
-            if (tx_iter_ != txqueue.end()) {
-                do_send(streamsk_); // do_recv(dgram_);
+            if (streamsk_.is_open()) {
+                if (tx_iter_ == txqueue.end()) {
+                    tx_iter_ = txqueue.wait(0);
+                }
+                if (tx_iter_ != txqueue.end()) {
+                    do_send(streamsk_); // do_recv(dgramsk_);
+                }
             }
 
             struct epoll_event evts[16];
@@ -458,7 +453,7 @@ struct NetworkIO //: IO_objects<TXQueue>
                 xif->on_events(*this, evts[i].events);
             }
         }
-        DEBUG("");
+        DEBUG("thread %s end", thread.debugsym);
     }
     // std::tuple<>
     void process_io(ListenSocket& lisk) { listenio_.process_io(lisk); }
@@ -466,7 +461,7 @@ struct NetworkIO //: IO_objects<TXQueue>
 
     StreamSocket* new_connection(/*std::move*/StreamSocket& sk) {
         if (&sk == &streamsk_) {
-            ERR_EXIT("new_connection");
+            ERR_EXIT("");
         }
         if (streamsk_.is_open()) {
             ERR_EXIT("already open");

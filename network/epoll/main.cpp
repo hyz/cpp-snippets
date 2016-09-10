@@ -62,10 +62,10 @@ struct ServerMain
         v[1] = milliseconds(Clock::now() - Clock::midnight());
         //unsigned mnight = milliseconds(Clock::midnight() - Clock::epoch());
         //unsigned now = milliseconds(Clock::now() - Clock::epoch());
-        if (ofp_) {
-            pthread_mutex_lock_guard lk(mutex_);
-            fprintf(ofp_,"%u %u %u\n", v[0], v[1], (int)buf.size()); //("%u %u, now-midnight %u-%u=%u", v[0], v[1], now, mnight, now-mnight);
-        }
+        //if (ofp_) {
+        //    pthread_mutex_lock_guard lk(mutex_);
+        //    fprintf(ofp_,"%u %u %u\n", v[0], v[1], (int)buf.size()); //("%u %u, now-midnight %u-%u=%u", v[0], v[1], now, mnight, now-mnight);
+        //}
         buf.put((char*)&v, sizeof(v));
     }
 
@@ -78,8 +78,16 @@ struct ServerMain
 
             uint32_t mnight = milliseconds(Clock::now() - Clock::midnight());
             if (ofp_) {
-                pthread_mutex_lock_guard lk(mutex_);
-                fprintf(ofp_,"%u RTT %u-%u=%d %u\n", v[0], mnight, v[1], int(mnight - v[1]), v[2]);
+                //pthread_mutex_lock_guard lk(mutex_);
+                struct timeval tv = uptime.up();
+                fprintf(ofp_,"%04u.%03u %u RTT %u-%u %d frame-size %u\n"
+                        , unsigned(tv.tv_sec%10000), unsigned(tv.tv_usec/1000)
+                        , v[0], mnight, v[1], int(mnight - v[1]), v[2]);
+
+                static unsigned numb=0;
+                if ((++numb & 0x01f)==0) {
+                    fflush(ofp_);
+                }
             }
 
             rb.consume(Feedback_packsize);
@@ -96,6 +104,7 @@ struct ServerMain
         }
     }
     FILE* ofp_;
+    uptimeval uptime; //timestamp ts_;
 };
 
 struct ClientMain

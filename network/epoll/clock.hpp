@@ -37,7 +37,7 @@ struct clock_realtime_type {
         return time_point(midnight_time(), 0);
     }
     static time_point now() {
-        time_point tp(0,0);
+        time_point tp(0);
         gettimeofday(&tp,NULL); //clock_gettime(CLOCK_REALTIME, &tp);
         //DEBUG("gettimeofday %u %u", tp.tv_sec, tp.tv_usec);
         return tp;
@@ -99,6 +99,42 @@ inline unsigned seconds(clock_realtime_type::duration const& d) {
 //    update_global_midnight(tsv.tv_sec, within_a_day);
 //    return ((tsv.tv_sec - global_midnight)*1000 + (tsv.tv_nsec + 500000)/1000000);
 //}
+
+struct timestamp : tm {
+    time_t time;
+    timestamp() {
+        this->time = ::time(0);
+        localtime_r(&time, this);
+    }
+    timestamp* uptime() {
+        time_t ct = ::time(0);
+        unsigned x = ct - time;
+        if (x + tm_sec > 59) {
+            localtime_r(&time, this);
+        }
+        tm_sec += x;
+        time = ct;
+        return this;
+    }
+};
+
+struct uptimeval : timeval {
+    uptimeval() {
+        gettimeofday(this,NULL); //clock_gettime(CLOCK_REALTIME, &tp);
+    }
+    struct timeval up() {
+        timeval tp;
+        gettimeofday(&tp,NULL); //clock_gettime(CLOCK_REALTIME, &tp);
+        if (tp.tv_usec < tv_usec) {
+            tp.tv_usec += 1000000 - tv_usec;
+            --tp.tv_sec;
+        } else {
+            tp.tv_usec -= tv_usec;
+        }
+        tp.tv_sec -= tv_sec;
+        return tp;
+    }
+};
 
 #endif // CLOCK_HPP__
 
