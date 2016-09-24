@@ -1,24 +1,26 @@
 #ifndef ALOG_HPP__
 #define ALOG_HPP__
 
-#if defined(__ANDROID__) && !defined(ALOG_CONSOLE)
+# include <stdlib.h>
+# include <string.h> // basename(__FILE__);
+# include <stdio.h>
+#if defined(__ANDROID__)
 # include <android/log.h>
+#elif !defined(ALOG_CONSOLE)
+# define ALOG_CONSOLE
+#endif
+
+#if defined(__ANDROID__) && !defined(ALOG_CONSOLE)
   enum { LOG_ERROR = ANDROID_LOG_ERROR };
-  enum { LOG_WARN = ANDROID_LOG_WARN };
+  enum { LOG_WARN  = ANDROID_LOG_WARN };
   enum { LOG_DEBUG = ANDROID_LOG_DEBUG };
   enum { LOG_VERBO = ANDROID_LOG_VERBOSE };
 #else
-# if !defined(ALOG_CONSOLE)
-#   define ALOG_CONSOLE
-# endif
-# include <stdlib.h>
-# include <string.h> // basename(__FILE__);
   enum { LOG_ERROR = 4 };
   enum { LOG_WARN  = 3 };
   enum { LOG_VERBO = 2 };
   enum { LOG_DEBUG = 1 };
 #endif
-# include <stdio.h>
 
 //#if defined(__GCC__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
 //#endif

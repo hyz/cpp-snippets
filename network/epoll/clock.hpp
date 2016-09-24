@@ -23,6 +23,47 @@ inline unsigned seconds(process_real_cpu_clock::duration const& d) {
 }
 #endif
 
+inline struct timeval make_timeval(time_t sec, int usec) {
+    struct timeval tv;
+    tv.tv_sec = sec;
+    tv.tv_usec = usec;
+    return tv;
+}
+
+struct midnight_time
+{
+    static struct timeval& timeval() { return helper<>::timeval(); }
+    static time_t time() { return helper<>::time(); }
+
+private:
+    template <int I_=0> struct helper
+    {
+        static time_t& time() { return timeval().tv_sec; }
+        static struct timeval& timeval();
+
+    private:
+        struct timeval tv_;
+        helper() {
+            tv_.tv_sec = make();
+            tv_.tv_usec = 0;
+        }
+        static time_t make() {
+            struct tm tm;
+            time_t t = ::time(0);
+            localtime_r(&t, &tm);
+            //DEBUG("tm %u %u:%u:%u", (unsigned)t, tm.tm_hour,tm.tm_min,tm.tm_sec);
+            tm.tm_sec = 0;
+            tm.tm_min = 0;
+            tm.tm_hour = 0;
+            return mktime(&tm);
+        }
+    };
+};
+template <int I_> struct timeval& midnight_time::helper<I_>::timeval() {
+    static helper<> z;
+    return z.tv_;
+}
+
 struct clock_realtime_type {
     struct duration {
         int64_t microseconds;
@@ -33,32 +74,18 @@ struct clock_realtime_type {
         }
         time_point(time_t sec, unsigned usec=0) { tv_sec = sec; tv_usec = usec; }
     };
+
     static time_point midnight() {
-        return time_point(midnight_time(), 0);
+        return time_point(midnight_time::time(), 0);
     }
     static time_point now() {
         time_point tp(0);
         gettimeofday(&tp,NULL); //clock_gettime(CLOCK_REALTIME, &tp);
-        //DEBUG("gettimeofday %u %u", tp.tv_sec, tp.tv_usec);
         return tp;
     }
     static time_point epoch() { return time_point(0,0); }
-
-    static time_t midnight_time() {
-        static time_t midt = 0;
-        if (midt == 0) {
-            struct tm tm;
-            time_t t = time(0);
-            localtime_r(&t, &tm);
-            //DEBUG("tm %u %u:%u:%u", (unsigned)t, tm.tm_hour,tm.tm_min,tm.tm_sec);
-            tm.tm_sec = 0;
-            tm.tm_min = 0;
-            tm.tm_hour = 0;
-            return (midt = mktime(&tm));
-        }
-        return midt;
-    }
 };
+
 inline unsigned microseconds(clock_realtime_type::duration const& d) {
     return d.microseconds;
 }
@@ -118,23 +145,102 @@ struct timestamp : tm {
     }
 };
 
-struct uptimeval : timeval {
-    uptimeval() {
-        gettimeofday(this,NULL); //clock_gettime(CLOCK_REALTIME, &tp);
+inline struct timeval& normalize(struct timeval& tv) {
+    if (tv.tv_usec < 0) {
+        tv.tv_usec += 1000000;
+        --tv.tv_sec;
     }
-    struct timeval up() {
-        timeval tp;
-        gettimeofday(&tp,NULL); //clock_gettime(CLOCK_REALTIME, &tp);
-        if (tp.tv_usec < tv_usec) {
-            tp.tv_usec += 1000000 - tv_usec;
-            --tp.tv_sec;
-        } else {
-            tp.tv_usec -= tv_usec;
-        }
-        tp.tv_sec -= tv_sec;
-        return tp;
+    return tv;
+}
+inline struct timeval& subtract_assign(struct timeval& lhs, struct timeval const& rhs) {
+    //lhs.tv_usec -= rhs.tv_usec;
+    //lhs.tv_sec -= rhs.tv_sec;
+    //return lhs;
+    if (lhs.tv_usec < rhs.tv_usec) {
+        lhs.tv_usec += 1000000 - rhs.tv_usec;
+        --lhs.tv_sec;
+    } else {
+        lhs.tv_usec -= rhs.tv_usec;
     }
+    lhs.tv_sec -= rhs.tv_sec;
+    return lhs;
+}
+
+inline unsigned microseconds(struct timeval const& tv) {
+    return tv.tv_usec + tv.tv_sec * 1000000;
+}
+inline unsigned milliseconds(struct timeval const& tv) {
+    return tv.tv_usec/1000 + tv.tv_sec * 1000;
+}
+inline unsigned seconds(struct timeval const& tv) {
+    return tv.tv_sec;
+}
+inline struct timeval operator-(struct timeval lhs, struct timeval const& rhs) {
+    return subtract_assign(lhs, rhs);
+}
+
+struct elapsed_timer
+{
+    elapsed_timer() {
+        gettimeofday(&tv_,NULL); //clock_gettime(CLOCK_REALTIME, &off);
+    }
+    struct timeval elapsed() const {
+        struct timeval now;
+        gettimeofday(&now,NULL);
+        return subtract_assign(now, tv_);
+    }
+    struct timeval tv_;
 };
+
+struct uptime
+{
+    static struct timeval elapsed() {
+        return subtract(zero());
+    }
+    static struct timeval const& zero() {
+        return basetime_helper<>::timeval();
+    }
+
+    static struct timeval const& zero(struct timeval const& tv) {
+        return basetime_helper<>::timeval() = tv;
+    }
+
+private:
+    static struct timeval subtract(struct timeval const& tv) {
+        timeval off;
+        gettimeofday(&off,NULL); //clock_gettime(CLOCK_REALTIME, &off);
+        return subtract_assign(off, tv);
+    }
+    template <int I_=0> struct basetime_helper {
+        struct timeval tv_;
+        basetime_helper() {
+            gettimeofday(&tv_,NULL); //clock_gettime(CLOCK_REALTIME, &tv);
+        }
+        static struct timeval& timeval();
+    };
+};
+
+#if defined(__arm__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
+extern struct timeval extimeval_;
+#endif
+
+template <int I_>
+struct timeval& uptime::basetime_helper<I_>::timeval() {
+#if defined(__arm__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
+#warning "arm-gcc-4.4"
+    return extimeval_;
+#else
+    static basetime_helper<I_> z;
+    return z.tv_;
+#endif
+}
+
+//long uptime = 0;
+//struct sysinfo s_info;
+//if(0==sysinfo(&s_info))
+//{
+//    uptime = s_info.uptime;
+//}   
 
 #endif // CLOCK_HPP__
 

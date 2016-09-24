@@ -2,6 +2,7 @@
 #define BUFFER_HPP__
 
 #include <stdlib.h>
+#include <array>
 #include <algorithm>
 #include <boost/noncopyable.hpp>
 #include <boost/range.hpp>
@@ -51,15 +52,6 @@ struct buffer_ref : boost::iterator_range<char*>
                 ERR_EXIT("size %u %u", siz, size());
             }
         }
-    //char* begin() const { return begin_; }
-    //char* end() const { return cur_; }
-    //unsigned size() const { return end() - begin(); }
-    //bool empty() const { return end()==begin(); }
-
-    //char* begin(int) const { return cur_; }
-    //char* end(int) const { return end_; }
-    //unsigned size(int) const { return end(1) - cur_; }
-    //bool empty(int) const { return end(1)==begin(1); }
 
     inline unsigned size_fr(char* p) const { return unsigned(end_ - p); }
     char * end_; //*begin_, *cur_, *end_;
@@ -71,8 +63,9 @@ struct array_buf : buffer_ref //, boost::noncopyable
     enum { Nu32 = (Capacity+3)/4 };
     array_buf() : buffer_ref((char*)&array_[0], (char*)&array_[0], (char*)&array_[Nu32])
     {}
-    uint32_t array_[Nu32];
+    std::array<uint32_t,Nu32> array_; // uint32_t array_[Nu32];
 };
+
 template <unsigned Capacity>
 struct malloc_buf : buffer_ref
 {
@@ -85,10 +78,26 @@ struct malloc_buf : buffer_ref
     }
     malloc_buf() : buffer_ref((char*)::malloc(Capacity))
     { end_ = begin() + Capacity; }
+
+
+    malloc_buf(malloc_buf && rhs) : buffer_ref(rhs.begin(),rhs.end(),end_)
+    { rhs = buffer_ref(); }
+
+    malloc_buf& operator=(malloc_buf && rhs) {
+        if (this != &rhs) {
+            buffer_ref& b = *this;
+            b = buffer_ref(rhs.begin(),rhs.end(),end_);
+            rhs = buffer_ref();
+        }
+        return *this;
+    }
+private:
+    malloc_buf(malloc_buf const&);
+    malloc_buf& operator=(malloc_buf const&);
 };
 
 template <typename Buffer, unsigned BufCount>
-struct cycle_buffer_queue //: private Alloc
+struct cycle_buffer_queue : boost::noncopyable //private Alloc
 {
     typedef Buffer* iterator;
 
@@ -139,6 +148,7 @@ struct cycle_buffer_queue //: private Alloc
             ialloc_ = end();
             cond_.signal();
         } else if (j == iusing_) {
+            j->consume(j->size());
             iusing_ = end();
         } else {
             ERR_EXIT("fatal %p %p %p", j, iusing_, ialloc_);

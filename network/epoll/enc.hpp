@@ -14,11 +14,14 @@
 #include "epoll.hpp"
 #include "buffer.hpp"
 #include "clock.hpp"
-#ifndef NOENC
+#ifdef NOENC
+# warning NOENC
+#else
 # include "gmlib.h"
 #endif
 
-enum { BITSTREAM_LEN  = (1920 * 1080 * 3 / 2) }; // (720 * 576 * 3 / 2)
+enum { BITSTREAM_LEN = (1920 * 1080 * 3 / 2) }; // (720 * 576 * 3 / 2)
+//enum { BITSTREAM_LEN = 524288 };
 
 template <typename BufferQueue>
 struct Encoder : boost::noncopyable
@@ -26,14 +29,14 @@ struct Encoder : boost::noncopyable
     enum { MAX_BITSTREAM_NUM = 1 };
 
     Thread<Encoder> thread;
-    BufferQueue buflis;
+    BufferQueue bufque;
 #ifndef NOENC
     gm_system_t gm_system;
     void *capture_object;
     void *encode_object;
     enum { cch_ = 0 }; //cch_ = 0; // use capture virtual channel 0
 
-    FILE *record_file;
+    //FILE *record_file;
 
     ~Encoder() {
         gm_delete_obj(encode_object);
@@ -42,9 +45,9 @@ struct Encoder : boost::noncopyable
         /// fclose(record_file);
     }
 #endif
-    Encoder(BufferQueue& lis, FILE* recfile=0)
+    Encoder(BufferQueue& lis)
         : thread(*this, "Encode")
-        , buflis(lis)
+        , bufque(lis)
     {
 #ifndef NOENC
         DECLARE_ATTR(cap_attr, gm_cap_attr_t);
@@ -52,6 +55,11 @@ struct Encoder : boost::noncopyable
 
         gm_init(); //gmlib initial(GM????ʼ??)
         gm_get_sysinfo(&gm_system);
+    //cap_fps = gm_system.cap[0].framerate;
+    //cap_h = gm_system.cap[0].dim.height;
+    //cap_w = gm_system.cap[0].dim.width;
+    //cap_bandwidth = cap_fps * cap_h * cap_w;
+        //gm_enc_init(0, 3, 0, ENC_TYPE_H264, GM_CBR, cap_fps, 8192, gm_system.cap[0].dim.width, gm_system.cap[0].dim.height);   
         
         capture_object = gm_new_obj(GM_CAP_OBJECT); // new capture object(??ȡ??׽????)
         encode_object = gm_new_obj(GM_ENCODER_OBJECT);  // // create encoder object (??ȡ????????)
@@ -70,11 +78,16 @@ struct Encoder : boost::noncopyable
         h264e_attr.ratectl.mode = GM_CBR;
         h264e_attr.ratectl.gop = 1; //60;
         h264e_attr.ratectl.bitrate = 8192;  // 2Mbps
+            //h264e_attr.ratectl.bitrate_max = bitrate; 
+            //h264e_attr.ratectl.init_quant = 20;
+            //h264e_attr.ratectl.min_quant = 16;
+            //h264e_attr.ratectl.max_quant = 30;
         h264e_attr.b_frame_num = 0; // B-frames per GOP (H.264 high profile)
         h264e_attr.enable_mv_data = 0;  // disable H.264 motion data output
         gm_set_attr(encode_object, &h264e_attr);
 
-        record_file = recfile; //stdout; //fopen(filename, "wb");
+        //record_file = recfile; //stdout; //fopen(filename, "wb");
+        LOGV("ch%d %dx%d", (int)cch_, (int)gm_system.cap[cch_].dim.width, (int)gm_system.cap[cch_].dim.height);
 #endif
     }
     void run() // thread func
@@ -89,10 +102,11 @@ struct Encoder : boost::noncopyable
         gm_pollfd_t poll_fds[MAX_BITSTREAM_NUM];
         gm_enc_multi_bitstream_t multi_bs[MAX_BITSTREAM_NUM];
         typename std::decay<BufferQueue>::type::iterator bufs[MAX_BITSTREAM_NUM];
+        //typedef typename std::decay<BufferQueue>::type::iterator iterator;
 
         memset(poll_fds, 0, sizeof(poll_fds));
         for (int i = 0; i < MAX_BITSTREAM_NUM; i++) {
-            bufs[i] = buflis.alloc(BITSTREAM_LEN);
+            bufs[i] = bufque.alloc( BITSTREAM_LEN);
         }
 
         poll_fds[cch_].bindfd = bindfd;
@@ -110,8 +124,8 @@ struct Encoder : boost::noncopyable
                 if (poll_fds[i].revent.event != GM_POLL_READ)
                     continue;
                 if (poll_fds[i].revent.bs_len > BITSTREAM_LEN) {
-                    LOGE("bitstream buffer length is not enough %d, %d"
-                            , poll_fds[i].revent.bs_len, (int)BITSTREAM_LEN);
+                    ERR_EXIT("BITSTREAM_LEN %d < %d"
+                            , int(BITSTREAM_LEN), poll_fds[i].revent.bs_len);
                     continue;
                 }
                 multi_bs[i].bindfd = poll_fds[i].bindfd;
@@ -131,14 +145,9 @@ struct Encoder : boost::noncopyable
                     } else if (multi_bs[i].retval == GM_SUCCESS) {
                         //DEBUG("<CH%d, mv_len=%d bs_len=%d, keyframe=%d, newbsflag=0x%x>",
                         //    i, multi_bs[i].bs.mv_len, multi_bs[i].bs.bs_len, multi_bs[i].bs.keyframe, multi_bs[i].bs.newbs_flag);
-                        if (record_file) {
-                            fwrite(multi_bs[i].bs.bs_buf, multi_bs[i].bs.bs_len, 1, record_file);
-                            fflush(record_file);
-                        }
-
                         bufs[i]->commit(*bufs[i], multi_bs[i].bs.bs_len);
-                        buflis.done(bufs[i]);
-                        bufs[i] = buflis.alloc(BITSTREAM_LEN);
+                        bufque.done(bufs[i]);
+                        bufs[i] = bufque.alloc( BITSTREAM_LEN);
                     }
                 }
             }
@@ -148,6 +157,31 @@ struct Encoder : boost::noncopyable
         gm_delete_groupfd(groupfd);
 #endif
     }
+
+    //static PrefixHead* set_prefix_info(char* addr, unsigned len)
+    //{
+    //    PrefixHead* inf = (PrefixHead*)addr;
+    //    ERR_EXIT_IF(ptrdiff_t(addr) % sizeof(uint32_t), "");
+    //    ERR_EXIT_IF((void*)inf != (void*)addr, "");
+
+    //    struct timeval v = uptime::offset();
+    //    inf->tvs[0] = short(v.tv_sec%10000);
+    //    inf->tvs[1] = short(v.tv_usec/1000);
+    //    inf->len = len; //bs_len + sizeof(PrefixHead);
+    //    return inf;
+    //}
+
+    //void writefile(char*bs_buf, unsigned bs_len)
+    //{
+    //    PrefixHead inf;
+    //    struct timeval v = uptime::offset();
+    //    inf.tvs[0] = short(v.tv_sec%10000);
+    //    inf.tvs[1] = short(v.tv_usec/1000);
+    //    inf.len = bs_len + sizeof(inf);
+
+    //    fwrite(&inf, sizeof(inf), 1, record_file);
+    //    fwrite(bs_buf, bs_len, 1, record_file);
+    //}
 };
 
 #endif // ENC_CPP__

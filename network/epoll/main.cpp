@@ -3,6 +3,8 @@
 #include "epoll.hpp"
 #include "enc.hpp"
 
+struct timeval extimeval_;
+
 static char* trim_right(char* s) {
     char* e = s + strlen(s);
     while (e > s && isspace(*(e-1)))
@@ -16,7 +18,22 @@ static char* trim_right(char* s) {
 
 typedef clock_realtime_type Clock;
 
-struct ServerMain
+struct PadInfo {
+    uint32_t u4;
+    uint16_t ts[2];
+
+    PadInfo() {}
+    PadInfo(unsigned x, struct timeval tv) {
+        u4 = x;
+        ts[0] = short(tv.tv_sec % 10000);
+        ts[1] = short(tv.tv_usec / 1000);
+    }
+    unsigned millis() const { return ts[0]*1000u + ts[1]; }
+};
+
+enum { Port=9990 };
+
+struct ServerMain : boost::noncopyable
 {
     typedef array_buf<16> Recvbuffer;
 
@@ -24,137 +41,164 @@ struct ServerMain
     struct BufferQueue : cycle_list {
         void done(iterator j) {
             if (j == ialloc_) {
-                replace_startbytes_with_len4(j->begin(), j->size() - 4);
-                mysrv_->attach_test_info(*j);
+                replace_startbytes_with_len4(j->begin(), j->size());
+                my_->attach_test_info(*j);
+                //if (record_file)
+                //    //fwrite(bufs[i]->begin(), bufs[i]->size(), 1, record_file);
             }
-            return cycle_list::done(j);
+            cycle_list::done(j);
         }
-        ServerMain* mysrv_;
+        ServerMain* my_;
     };
     //typedef cycle_buffer_queue<malloc_buf<BITSTREAM_LEN>,2> BufferQueue; //typedef buffer_queue_<BITSTREAM_LEN> BufferQueue;
 
     BufferQueue bufq;
-    enum { Feedback_packsize=16 };
-    pthread_mutex_type mutex_;
+    NetworkIO<TCPServer, ServerMain::BufferQueue&,ServerMain&> nwk; //(srv.bufq, srv, NULL);
+    Thread<ServerMain> thread;
+    //pthread_mutex_type mutex_;
 
-    static void replace_startbytes_with_len4(char* bs_buf, uint32_t bs_len4) {
-        if ((ptrdiff_t)bs_buf % 4) {
-            ERR_EXIT("bs_buf addr %p", bs_buf);
-        }
-        uint32_t* u4 = (uint32_t*)bs_buf;
-        if (ntohl(*u4) != 0x00000001)
-            ERR_EXIT("bs_buf startbytes %08x", *u4);
-        *u4 = htonl(bs_len4);
+    //enum { Feedback_packsize=16 };
 
-        {
-            static unsigned maxlen4 = 0;
-            if (bs_len4 > maxlen4) {
-                maxlen4=bs_len4;
-                fprintf(stderr, "max bs_len4 %u\n", maxlen4);
-            }
+    int operator()(Recvbuffer& rb, BufferQueue& q) { return recvd(rb,q); }
+    int recvd(Recvbuffer& rb, BufferQueue&)
+    {
+        char* p = rb.begin();
+        while (p + sizeof(PadInfo) <= rb.end()) {
+            ERR_EXIT_IF(ptrdiff_t(p) % 4, "");
+            RTT((PadInfo*)p);
+            p += sizeof(PadInfo);
         }
+        return int(p - rb.begin()); //rb.consume(p - rb.begin()); return 0;
     }
-    void attach_test_info(buffer_ref& buf) {
-        enum { Test_Tail_Len=8 };
-        static unsigned fidx = 0;
-        uint32_t v[2];
-        v[0] = fidx++;
-        v[1] = milliseconds(Clock::now() - Clock::midnight());
-        //unsigned mnight = milliseconds(Clock::midnight() - Clock::epoch());
-        //unsigned now = milliseconds(Clock::now() - Clock::epoch());
-        //if (ofp_) {
-        //    pthread_mutex_lock_guard lk(mutex_);
-        //    fprintf(ofp_,"%u %u %u\n", v[0], v[1], (int)buf.size()); //("%u %u, now-midnight %u-%u=%u", v[0], v[1], now, mnight, now-mnight);
-        //}
-        buf.put((char*)&v, sizeof(v));
+    void run() {
+        nwk.xpoll(&thread.stopped);
     }
 
-    int operator()(Recvbuffer& rb, BufferQueue&) {
-        while (rb.size() >= Feedback_packsize) {
-            char* p = rb.begin();
-            uint32_t* v = (uint32_t*)p; // [0, seq, timestamp, size]
-            if ((ptrdiff_t)p % sizeof(uint32_t) || (void*)v != (void*)p)
-                ERR_EXIT("process_recvd_data %p %p", p, v);
-
-            uint32_t mnight = milliseconds(Clock::now() - Clock::midnight());
-            if (ofp_) {
-                //pthread_mutex_lock_guard lk(mutex_);
-                struct timeval tv = uptime.up();
-                fprintf(ofp_,"%04u.%03u %u RTT %u-%u %d frame-size %u\n"
-                        , unsigned(tv.tv_sec%10000), unsigned(tv.tv_usec/1000)
-                        , v[0], mnight, v[1], int(mnight - v[1]), v[2]);
-
-                static unsigned numb=0;
-                if ((++numb & 0x01f)==0) {
-                    fflush(ofp_);
-                }
-            }
-
-            rb.consume(Feedback_packsize);
-        }
-        return 0;
-    }
-    ServerMain(FILE*) {
-        ofp_ = fopen("server.timestamp.log","wb");
-        bufq.mysrv_ = this;
+    ServerMain() : nwk(bufq, *this, NULL, Port), thread(*this, "ServerMain")
+    {
+        ofp_ = 0; //fopen("server.timestamp.log","wb");
+        bufq.my_ = this;
+        RTT_reset();
     }
     ~ServerMain() {
         if (ofp_ && ofp_ != stdout && ofp_ != stderr) {
             fclose(ofp_);
         }
     }
+
+    int latency_sum, latency[0x0f+1];
+    unsigned latency_i;
+
+    void RTT(PadInfo*p) {
+        PadInfo q(0, uptime::elapsed() );
+
+        if (q.millis() < p->millis()) {
+            LOGE("%u < %u", q.millis(), p->millis());
+            //RTT_reset();
+        } else {
+            int i = (latency_i++ & 0x0f);
+            int millis = latency[i];
+            latency[i] = q.millis() - p->millis();
+            int diff = latency[i] - millis;
+            latency_sum += diff ; //latency[i] - millis;
+            if ((latency_i & 0x3f) == 0x20) {
+                DEBUG("%04d.%03d %d", q.ts[0], q.ts[1], latency_sum/(0x0f+1));
+                //DEBUG("latency:%d:%u %3d-%-3d=%3d %4d, %d",i,p->u4, latency[i], millis, diff, latency_sum, latency_sum/0x0f);
+            }
+                DEBUG("%04d.%03d %d", q.ts[0], q.ts[1], latency_sum/(0x0f+1));
+        }
+    }
+    void RTT_reset() {
+        memset(latency, 0, sizeof(latency));
+        latency_sum = 0;
+        latency_i = 0;
+    }
     FILE* ofp_;
-    uptimeval uptime; //timestamp ts_;
+#if 1
+    static void replace_startbytes_with_len4(char* bs_buf, uint32_t bs_len4) {
+        if ((ptrdiff_t)bs_buf % 4) {
+            ERR_EXIT("bs_buf addr %p", bs_buf);
+        }
+        uint32_t* u4 = (uint32_t*)bs_buf;
+        if (ntohl(*u4) != 0x00000001) {
+            ERR_EXIT("bs_buf startbytes %08x", *u4);
+        }
+        *u4 = htonl(bs_len4);
+
+        {
+            static unsigned maxlen4 = 0;
+            if (bs_len4 > maxlen4) {
+                maxlen4=bs_len4;
+                LOGV("max bs_len4 %u", maxlen4);
+            }
+        }
+    }
+    void attach_test_info(buffer_ref& buf) {
+        static unsigned fidx = 0;
+        uint32_t uh = htonl(0x80000000 | (4+sizeof(PadInfo)));
+        PadInfo inf( fidx++, uptime::elapsed() );
+        buf.put((char*)&uh, sizeof(uint32_t));
+        buf.put((char*)&inf, sizeof(PadInfo));
+    }
+#endif
 };
 
-struct ClientMain
+struct ClientMain : boost::noncopyable
 {
     typedef malloc_buf<BITSTREAM_LEN> Recvbuffer;
 
     typedef cycle_buffer_queue<array_buf<16>,16> BufferQueue;
     BufferQueue bufq;
-    enum { Feedback_Tail_Len=8 };
+    NetworkIO<TCPClient, ClientMain::BufferQueue&,ClientMain&> nwk; //(cli.bufq, cli, argv[1]);
+    Thread<ClientMain> thread;
 
     FILE* ofp_;
-    ClientMain(FILE* fp) : ofp_(fp) {}
-
-    int operator()(Recvbuffer& rb, BufferQueue& txbufs) {
-        ERR_EXIT_IF(&txbufs!=&bufq, "");
-        while (rb.size() >= sizeof(uint32_t)) {
-            char* p = rb.begin();
-            uint32_t* u4 = (uint32_t*)p;
-            if ((ptrdiff_t)p % sizeof(uint32_t) || (void*)u4 != (void*)p)
-                ERR_EXIT("process_recvd_data %p %p", p, u4);
-
-            unsigned lenp4 = 4 + ntohl(*u4);
-            if (rb.size() < lenp4 + Feedback_Tail_Len) {
-                return 0;
-            }
-            *u4 = htonl(0x00000001);
-
-            feedback(txbufs, p+lenp4, Feedback_Tail_Len, lenp4);
-            //DEBUG("");//("h:size %u %u", lenp4, rb.size());
-            if (ofp_) {
-                fwrite(p, lenp4, 1, ofp_);
-            }
-
-            rb.consume(lenp4 + Feedback_Tail_Len);
-        }
-        return 0;
+    ClientMain(char const* ip) : nwk(bufq, *this, ip, Port), thread(*this, "ClientMain") {
+        ofp_ = 0;
     }
 
-    void feedback(BufferQueue& txbufs, char* p, unsigned, unsigned lenp4) {
-        ERR_EXIT_IF(Feedback_Tail_Len!=8, "");
-        uint32_t v[4]; //// [ seq, timestamp, size, 0]
-        memcpy(&v[0], p, Feedback_Tail_Len);
-        v[2] = lenp4;
+    void run() {
+        nwk.xpoll(&thread.stopped);
+    }
 
-        BufferQueue::iterator it = txbufs.alloc(sizeof(v));
-        it->put((char*)&v, sizeof(v));
+    int operator()(Recvbuffer& rb, BufferQueue& txbufs) { return recvd(rb, txbufs); }
+    int recvd(Recvbuffer& rb, BufferQueue& txbufs)
+    {
+        ERR_EXIT_IF(&txbufs!=&bufq, "");
+        if (rb.size() < 8) {
+            return 0;
+        }
+        if ((ptrdiff_t)rb.begin() % sizeof(uint32_t)) {
+            ERR_EXIT("process_recvd_data %p", rb.begin());
+        }
+
+        char* const p = rb.begin();
+            uint32_t uh = ntohl( *(uint32_t*)p );
+        char* const end = p + (uh & 0x0fffffff);
+
+        DEBUG("size %u %u", end-p, rb.size());
+        if (rb.end() < end) {
+            return 0;
+        }
+
+        if ((uh & 0x80000000)) {
+            feedback(txbufs, p+4, end);
+
+        } else {
+            *(uint32_t*)p = htonl(0x00000001);
+
+            //DEBUG("");//("h:size %u %u", lenp4, rb.size());
+            if (ofp_) {
+                fwrite(p, end-p, 1, ofp_);
+            }
+        }
+        return int(end - p); //(endp - p);
+    }
+
+    void feedback(BufferQueue& txbufs, char* p, char* end) {
+        BufferQueue::iterator it = txbufs.alloc(end - p);
+        it->put(p, end-p); //((char*)&inf, sizeof(inf));
         txbufs.done(it);
-
-        unsigned mnight = milliseconds(Clock::now() - Clock::midnight());
-        DEBUG("%u RTT %u-%u=%d %u", v[0], mnight, v[1], int(mnight - v[1]), v[2]);
     }
 
 };
@@ -173,58 +217,69 @@ template <typename Queue> void user_input(Queue* bufq)
             } else if (strcmp(line,"/exit") == 0 || strcmp(line,"/quit") == 0) {
                 break;
             }
-        } else if (bufq) {
-            strcat(line, "\n");
-            unsigned len = strlen(line);
+            continue;
+        }
+
+        if (bufq) {
+#ifdef NOENC
+            unsigned len = strlen( strcat(line, "\n") );
             typename Queue::iterator it = bufq->alloc(512);
             /*_*/{
-                uint32_t u4 = htonl(len);
+                uint32_t u4 = htonl(0x00000001);//(len);
                 it->put((char*)&u4, sizeof(uint32_t));
             }
             it->put(line, len);
             bufq->done(it);
+#endif
         } else {
             DEBUG("### console input ignored.");
         }
     }
 }
 
-int main(int argc, char* const argv[])
+static void second_clock()
 {
-    DEBUG("errno %s", strerror(errno));
-    if (argc == 2) { // client
-#ifdef NOENC
-        ClientMain cli(NULL);//( stdout );
-#else
-        ClientMain cli(NULL);//( fopen("/sdcard/tmp/rec2.264","wb") );
-#endif
-        NetworkIO<ClientMain::BufferQueue&,ClientMain&> nwk(cli.bufq, cli, argv[1]);
-        nwk.thread.start(); // run
+    while (1) {
+        struct timeval tv = uptime::elapsed();
+        printf("\r%04u.%03u  ", unsigned(tv.tv_sec%10000), unsigned(tv.tv_usec/1000));
+        fflush(stdout);
 
-    user_input((ClientMain::BufferQueue*)0);//(&bufq);
-        nwk.thread.stop();
-        nwk.thread.join();
-
-    } else { // server
-#ifdef NOENC
-        ServerMain srv( stdout );
-#else
-        ServerMain srv( fopen("tmp/feedback.out","wb") );
-#endif
-        Encoder<ServerMain::BufferQueue&> enc(srv.bufq, NULL);
-        NetworkIO<ServerMain::BufferQueue&,ServerMain&> nwk(srv.bufq, srv, NULL);
-        enc.thread.start(); // run
-        nwk.thread.start(); // run
-
-#ifdef NOENC
-    user_input(&srv.bufq);
-#else
-    for (;;) sleep(3); //user_input((ServerMain::BufferQueue*)0);//(&bufq);
-#endif
-        enc.thread.stop();
-        nwk.thread.stop();
-        nwk.thread.join();
-        enc.thread.join(); // pthread_join
+        tv.tv_sec = 0;
+        tv.tv_usec = 10*1000;
+        select(0,NULL,NULL,NULL,&tv);
     }
 }
+
+int main(int argc, char* const argv[])
+{
+    gettimeofday(&extimeval_,NULL); //clock_gettime(CLOCK_REALTIME, &tv);
+
+    DEBUG("bs_len %u, errno %s", (int)BITSTREAM_LEN, strerror(errno));
+    if (argc == 2) { // client
+        ClientMain cli(argv[1]);//( stdout );
+        cli.thread.start(); // run
+
+        //second_clock();
+    user_input((ClientMain::BufferQueue*)NULL);//(&bufq);
+
+        cli.thread.stop();
+        cli.thread.join();
+
+    } else { // server
+        ServerMain srv;//(fopen("tmp/feedback.out","wb"));
+        Encoder<ServerMain::BufferQueue&> enc(srv.bufq);
+
+        srv.thread.start(); // run
+        enc.thread.start(); // run
+
+        user_input(&srv.bufq);//((ServerMain::BufferQueue*)NULL); //(&srv.bufq);
+        //second_clock();
+
+        enc.thread.stop();
+        srv.thread.stop();
+        enc.thread.join(); // pthread_join
+        srv.thread.join();
+    }
+}
+
 

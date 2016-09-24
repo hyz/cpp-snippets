@@ -56,6 +56,12 @@ struct pthread_cond_type : boost::noncopyable
     int broadcast() {
         return pthread_cond_broadcast(&cond_);
     }
+    int notify_one() {
+        return pthread_cond_signal(&cond_);
+    }
+    int notify_all() {
+        return pthread_cond_broadcast(&cond_);
+    }
 };
 
 template <typename ValueType>
@@ -81,7 +87,8 @@ template <typename Object>
 struct Thread : boost::noncopyable
 {
     explicit Thread(Object& obj, /*void (Object::*run)(),*/ char const* sym=0)
-        : obj_(&obj) {
+        : obj_(&obj)
+    {
         debugsym = (sym ? sym : "");
         stopped = 0; //created = detached = joined = 0;
     }
@@ -108,7 +115,7 @@ struct Thread : boost::noncopyable
             return 0;
         }
         DEBUG("%s stopped=%d", debugsym, int(stopped));
-        int ec = pthread_join(pthread_, retval);
+        int ec = ::pthread_join(pthread_, retval);
         if (ec) {
             ERR_EXIT("%s pthread_join", debugsym);
         }
@@ -118,7 +125,7 @@ struct Thread : boost::noncopyable
     }
 
     int start() {
-        int ec = pthread_create(&pthread_,NULL, &sfun, this); //pthread_self;
+        int ec = ::pthread_create(&pthread_,NULL, &sfun, this); //pthread_self;
         if (ec) {
             ERR_EXIT("%s pthread_create", debugsym);
         }
@@ -128,10 +135,10 @@ struct Thread : boost::noncopyable
         return 0; //pthread_;
     }
 
-    bool stopped; //, created, detached, joined;
-    char const* debugsym;
-
     //TODO: movable
+
+    char const* debugsym;
+    bool stopped; //, created, detached, joined;
 private:
     enum { Xcreated=1, Xdetached, Xjoined };
     BitMask<unsigned char> msk_;
