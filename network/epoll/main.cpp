@@ -53,7 +53,7 @@ struct ServerMain : boost::noncopyable
     //typedef cycle_buffer_queue<malloc_buf<BITSTREAM_LEN>,2> BufferQueue; //typedef buffer_queue_<BITSTREAM_LEN> BufferQueue;
 
     BufferQueue bufq;
-    NetworkIO<TCPServer, ServerMain::BufferQueue&,ServerMain&> nwk; //(srv.bufq, srv, NULL);
+    NetworkIO<udp::server, ServerMain::BufferQueue&,ServerMain&> nwk; //(srv.bufq, srv, NULL);
     Thread<ServerMain> thread;
     //pthread_mutex_type mutex_;
 
@@ -70,10 +70,10 @@ struct ServerMain : boost::noncopyable
         }
         return int(p - rb.begin()); //rb.consume(p - rb.begin()); return 0;
     }
+
     void run() {
         nwk.xpoll(&thread.stopped);
     }
-
     ServerMain() : nwk(bufq, *this, NULL, Port), thread(*this, "ServerMain")
     {
         ofp_ = 0; //fopen("server.timestamp.log","wb");
@@ -149,7 +149,7 @@ struct ClientMain : boost::noncopyable
 
     typedef cycle_buffer_queue<array_buf<16>,16> BufferQueue;
     BufferQueue bufq;
-    NetworkIO<TCPClient, ClientMain::BufferQueue&,ClientMain&> nwk; //(cli.bufq, cli, argv[1]);
+    NetworkIO<udp::client, ClientMain::BufferQueue&,ClientMain&> nwk; //(cli.bufq, cli, argv[1]);
     Thread<ClientMain> thread;
 
     FILE* ofp_;

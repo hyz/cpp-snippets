@@ -87,7 +87,7 @@ struct malloc_buf : buffer_ref
         if (this != &rhs) {
             buffer_ref& b = *this;
             b = buffer_ref(rhs.begin(),rhs.end(),end_);
-            rhs = buffer_ref();
+            rhs = malloc_buf();
         }
         return *this;
     }
