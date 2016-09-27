@@ -21,6 +21,7 @@
   enum { LOG_VERBO = 2 };
   enum { LOG_DEBUG = 1 };
 #endif
+# include "clock.hpp"
 
 //#if defined(__GCC__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
 //#endif
@@ -48,8 +49,9 @@ template <typename... As> int logfn_(int lev, char const*fname, int ln, char con
         while (p < end && (*p = *src) && *src != '.') {
             ++src; ++p;
         }
-        *p++ = ' ';
-        *p = '\0';
+        *p++ = ' '; //*p = '\0';
+        rptime rt;
+        snprintf(p, (end-p), "%04d.%03d ", rt.sec,rt.msec);
     }
 #ifdef ALOG_CONSOLE
     //switch (lev) {

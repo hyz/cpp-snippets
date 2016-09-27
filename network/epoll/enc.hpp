@@ -87,7 +87,8 @@ struct Encoder : boost::noncopyable
         gm_set_attr(encode_object, &h264e_attr);
 
         //record_file = recfile; //stdout; //fopen(filename, "wb");
-        LOGV("ch%d %dx%d", (int)cch_, (int)gm_system.cap[cch_].dim.width, (int)gm_system.cap[cch_].dim.height);
+        LOGV("ch%d %dx%d fps %d", (int)cch_, (int)gm_system.cap[cch_].dim.width, (int)gm_system.cap[cch_].dim.height
+                , int(h264e_attr.frame_info.framerate));
 #endif
     }
     void run() // thread func

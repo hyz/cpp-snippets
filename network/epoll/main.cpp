@@ -18,17 +18,17 @@ static char* trim_right(char* s) {
 
 typedef clock_realtime_type Clock;
 
+static unsigned idx_g_ = 0;
 struct PadInfo {
-    uint32_t u4;
+    uint32_t u4, idx;
     uint16_t ts[2];
 
-    PadInfo() {}
-    PadInfo(unsigned x, struct timeval tv) {
-        u4 = x;
+    PadInfo(struct timeval tv) {
+        u4 = htonl(0x80000000 | sizeof(PadInfo));
+        idx= idx_g_++;
         ts[0] = short(tv.tv_sec % 10000);
         ts[1] = short(tv.tv_usec / 1000);
     }
-    unsigned millis() const { return ts[0]*1000u + ts[1]; }
 };
 
 enum { Port=9990 };
@@ -59,13 +59,15 @@ struct ServerMain : boost::noncopyable
 
     //enum { Feedback_packsize=16 };
 
-    int operator()(Recvbuffer& rb, BufferQueue& q) { return recvd(rb,q); }
-    int recvd(Recvbuffer& rb, BufferQueue&)
+    int operator()(Recvbuffer& rb, BufferQueue& q) { return unpack(rb,q); }
+    int unpack(Recvbuffer& rb, BufferQueue&)
     {
         char* p = rb.begin();
+        if (!(*p & 0x80))
+            ERR_EXIT("%x", *p);
         while (p + sizeof(PadInfo) <= rb.end()) {
             ERR_EXIT_IF(ptrdiff_t(p) % 4, "");
-            RTT((PadInfo*)p);
+            RTT(((PadInfo*)p)->ts);
             p += sizeof(PadInfo);
         }
         return int(p - rb.begin()); //rb.consume(p - rb.begin()); return 0;
@@ -89,23 +91,24 @@ struct ServerMain : boost::noncopyable
     int latency_sum, latency[0x0f+1];
     unsigned latency_i;
 
-    void RTT(PadInfo*p) {
-        PadInfo q(0, uptime::elapsed() );
+    void RTT(uint16_t ts[2]) {
+        unsigned msec2 = milliseconds( rptime() ); // PadInfo q( uptime::elapsed() );
+        unsigned msec1 = milliseconds( rptime(ts[0],ts[1]) );
 
-        if (q.millis() < p->millis()) {
-            LOGE("%u < %u", q.millis(), p->millis());
+        if (msec2 < msec1) {
+            LOGW("%u < %u", msec2, msec1);
             //RTT_reset();
         } else {
             int i = (latency_i++ & 0x0f);
             int millis = latency[i];
-            latency[i] = q.millis() - p->millis();
+            latency[i] = msec2 - msec1;
             int diff = latency[i] - millis;
             latency_sum += diff ; //latency[i] - millis;
             if ((latency_i & 0x3f) == 0x20) {
-                DEBUG("%04d.%03d %d", q.ts[0], q.ts[1], latency_sum/(0x0f+1));
-                //DEBUG("latency:%d:%u %3d-%-3d=%3d %4d, %d",i,p->u4, latency[i], millis, diff, latency_sum, latency_sum/0x0f);
+                DEBUG("%04d.%03d %d", ts[0], ts[1], latency_sum/(0x0f+1));
             }
-                DEBUG("%04d.%03d %d", q.ts[0], q.ts[1], latency_sum/(0x0f+1));
+            //DEBUG("%04d.%03d %d %d-%d %+d %d", ts[0],ts[1], i, latency[i],millis, diff, latency_sum); //latency_sum/(0x0f+1)
+            DEBUG("%04d.%03d %d", ts[0],ts[1], latency_sum/0x10);
         }
     }
     void RTT_reset() {
@@ -134,10 +137,7 @@ struct ServerMain : boost::noncopyable
         }
     }
     void attach_test_info(buffer_ref& buf) {
-        static unsigned fidx = 0;
-        uint32_t uh = htonl(0x80000000 | (4+sizeof(PadInfo)));
-        PadInfo inf( fidx++, uptime::elapsed() );
-        buf.put((char*)&uh, sizeof(uint32_t));
+        PadInfo inf( uptime::elapsed() );
         buf.put((char*)&inf, sizeof(PadInfo));
     }
 #endif
@@ -161,28 +161,28 @@ struct ClientMain : boost::noncopyable
         nwk.xpoll(&thread.stopped);
     }
 
-    int operator()(Recvbuffer& rb, BufferQueue& txbufs) { return recvd(rb, txbufs); }
-    int recvd(Recvbuffer& rb, BufferQueue& txbufs)
+    int operator()(Recvbuffer& rb, BufferQueue& txbufs) { return unpack(rb, txbufs); }
+    int unpack(Recvbuffer& rb, BufferQueue& txbufs)
     {
         ERR_EXIT_IF(&txbufs!=&bufq, "");
         if (rb.size() < 8) {
             return 0;
         }
         if ((ptrdiff_t)rb.begin() % sizeof(uint32_t)) {
-            ERR_EXIT("process_recvd_data %p", rb.begin());
+            ERR_EXIT("%p", rb.begin());
         }
 
         char* const p = rb.begin();
             uint32_t uh = ntohl( *(uint32_t*)p );
-        char* const end = p + (uh & 0x0fffffff);
+        char* const end = p + (uh & 0x00ffffff);
 
-        DEBUG("size %u %u", end-p, rb.size());
+        DEBUG("size %u %u, %08x", end-p, rb.size(), uh);
         if (rb.end() < end) {
             return 0;
         }
 
         if ((uh & 0x80000000)) {
-            feedback(txbufs, p+4, end);
+            feedback(txbufs, p, end);
 
         } else {
             *(uint32_t*)p = htonl(0x00000001);

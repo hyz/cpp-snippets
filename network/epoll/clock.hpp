@@ -242,6 +242,26 @@ struct timeval& uptime::basetime_helper<I_>::timeval() {
 //    uptime = s_info.uptime;
 //}   
 
+struct rptime {
+    uint16_t sec, msec;
+    rptime() {
+        struct timeval tv = uptime::elapsed();
+        sec = short(tv.tv_sec % 10000);
+        msec = short(tv.tv_usec / 1000);
+    }
+    rptime(struct timeval tv) {
+        sec = short(tv.tv_sec % 10000);
+        msec = short(tv.tv_usec / 1000);
+    }
+    rptime(uint16_t sec_, uint16_t msec_) {
+        sec = sec_;
+        msec = msec_;
+    }
+    //unsigned millis() const { return sec*1000u + msec; }
+};
+
+inline unsigned milliseconds(rptime const& rt) { return rt.sec*1000 + rt.msec; }
+
 #endif // CLOCK_HPP__
 
     //return (double)clock() / CLOCKS_PER_SEC;

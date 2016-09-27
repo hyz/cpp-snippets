@@ -115,8 +115,9 @@ struct cycle_buffer_queue : boost::noncopyable //private Alloc
     // ~cycle_buffer_queue() {}
 
     iterator alloc(unsigned siz) {
+        BOOST_ASSERT(ialloc_ == end());
+
         pthread_mutex_lock_guard lk(mutex_);
-        //DEBUG("buf:alloc: %u %d", ip_-begin(), ip_->stat);
         if (ip_ == iusing_) {
             ip_ = incr(ip_);
             if (ip_ == iusing_)
@@ -125,17 +126,20 @@ struct cycle_buffer_queue : boost::noncopyable //private Alloc
         }
         ip_->consume(ip_->size()); // ip_->stat = EAlloc;
         ip_->reserve(siz);
+        //if (size()==2) DEBUG("%d %d", int(ip_ - begin()), int(iusing_ - begin()));
         return (ialloc_ = ip_);
     }
 
     iterator wait(unsigned millis) {
+        BOOST_ASSERT(iusing_ == end());
+
         pthread_mutex_lock_guard lk(mutex_);
         iterator j = _findusable(ip_, decr(ip_));
         if (j == end() && millis > 0) {
             cond_.wait(mutex_, millis);
             j = _findusable(ip_, decr(ip_));
         }
-        //DEBUG("buf:wait: %u %d", j-begin(), j->stat);
+        //if (size()==2) DEBUG("%d %d", int(j-begin()), int(ialloc_-begin()));
         return (iusing_ = j);
     }
 
@@ -150,6 +154,20 @@ struct cycle_buffer_queue : boost::noncopyable //private Alloc
         } else if (j == iusing_) {
             j->consume(j->size());
             iusing_ = end();
+        } else {
+            ERR_EXIT("fatal %p %p %p", j, iusing_, ialloc_);
+        }
+    }
+    void fail(iterator j) {
+        if (j == ialloc_) {
+            if (ip_ != ialloc_) {
+                ERR_EXIT("fatal %p %p", ip_, ialloc_);
+            }
+            ialloc_ = end();
+            LOGE("alloc");
+        } else if (j == iusing_) {
+            iusing_ = end();
+            LOGE("using");
         } else {
             ERR_EXIT("fatal %p %p %p", j, iusing_, ialloc_);
         }

@@ -93,6 +93,8 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
 {
     typedef EPollSocket<Type,Context,XBuffer,XData,L2XData> ThisType;
     typedef XBuffer xbuffer_type;
+    typedef XData   xdata_type;
+    typedef L2XData l2xdata_type;
     // enum { type=Type; }
 
     ~EPollSocket() {
@@ -185,7 +187,7 @@ struct EPollSocket : EventInterface<Context>, boost::noncopyable
         int afd = ::accept(fd_, (struct sockaddr *)&sa, &slen);
         if (afd < 0) {
             events_ = 0;
-            if (errno == EAGAIN)
+            if (errno == EAGAIN) // || errno == EWOULDBLOCK
                 return 0;
             ERR_EXIT("accept: %d", afd);
         }
@@ -299,45 +301,17 @@ protected: //private:
     L2XData l2xdata_;
     // XData xdata_; //array_buf<bufsiz> xdata_;
 
-    // sendmsg; recvmsg; // struct iovec *iov
-    //int recv_(struct iovec*iov, unsigned iovlen, struct sockaddr_in* sa) {
-    //    struct msghdr h = {0};
-    //    h.msg_name = (void*)sa;
-    //    h.msg_namelen = sizeof(struct sockaddr_in);
-    //    h.msg_control = 0;
-    //    h.msg_controllen = 0;
-    //    h.msg_flags = 0;
-    //    h.msg_iov = iov;
-    //    h.msg_iovlen = iovlen;
-    //    return recv_ret_( ::recvmsg(fd_, &h, 0), iovlen_sum(iov,iovlen) );
-    //}
-    //int send_(struct iovec*iov, unsigned iovlen, struct sockaddr_in* sa) {
-    //    struct msghdr h = {0};
-    //    h.msg_name = (void*)sa;
-    //    h.msg_namelen = sizeof(struct sockaddr_in);
-    //    h.msg_control = 0;
-    //    h.msg_controllen = 0;
-    //    h.msg_flags = 0;
-    //    h.msg_iov = iov;
-    //    h.msg_iovlen = iovlen;
-    //    return send_ret_( ::sendmsg(fd_, &h, 0), iovlen_sum(iov,iovlen) );
-    //}
-    //int recv_(char*p, unsigned xlen, struct sockaddr_in* sa, socklen_t slen) {
-    //    return recv_ret_( ::recvfrom(fd_, p, xlen, 0, (struct sockaddr*)sa,slen), xlen );
-    //}
-    //int send_(char const* p, unsigned xlen, struct sockaddr_in* sa, socklen_t slen) {
-    //    return send_ret_( ::sendto(fd_, p, xlen, 0, (struct sockaddr*)sa, slen), xlen );
-    //}
-
     int recv_ret_(int ret, int xlen) {
+        //DEBUG("ret %d, len %d", ret, xlen);
         if (ret < 0 || (Type==SOCK_STREAM && ret < xlen)) {
             events_ &= ~EPOLLIN;
+            //DEBUG("off:EPOLLIN %s", strerror(errno));
         }
         if (ret < 0) {
             if (errno == EAGAIN) {
                 return 0;
             }
-            LOGE("recvfrom: %s", strerror(errno));
+            LOGE("recv: %s", strerror(errno));
             return ret;
         }
         if (Type==SOCK_STREAM && ret == 0) {
@@ -345,19 +319,19 @@ protected: //private:
 #else
             errno = EPIPE;
 #endif
-            LOGE("recvfrom:CLOSE:EPIPE");
+            LOGE("recv:CLOSE:EPIPE");
             return -1; //int(errno = EPIPE);
         }
         return ret;
     }
     int send_ret_(int ret, int xlen) {
-        if (ret < xlen)
+        //DEBUG("%d, xlen %d", ret, xlen);
+        if (ret < xlen || Type==SOCK_DGRAM)
             events_ &= ~EPOLLOUT;
         if (ret < 0) {
             if (errno == EAGAIN)
                 return 0;
             LOGE("sendto: %s", strerror(errno));
-            //return ret;
         }
         return ret;
     }
@@ -375,6 +349,7 @@ private:
 private:
     virtual void on_events(Context& ctx, int evts) {
         //DEBUG("process_events events %x, %d", evts, (int)ok(EPOLLOUT));
+        //if (!ok(EPOLLIN) && (evts & EPOLLIN)) DEBUG("on:EPOLLIN");
         events_ = evts;
         ctx.process_io(*this);
     }
@@ -473,7 +448,9 @@ struct StreamIO
     StreamIO(Context& c) : context(&c) {}
 };
 
-struct TCPServer {
+namespace tcp {
+
+struct server {
     template <typename Context, typename XBuffer>
     struct traits
     {
@@ -539,7 +516,7 @@ struct TCPServer {
     };
 };
 
-struct TCPClient {
+struct client {
     template <typename Context, typename XBuffer>
     struct traits
     {
@@ -570,6 +547,7 @@ struct TCPClient {
         };
     };
 };
+} // namespace tcp
 
 template <typename Type, typename TXQueue, typename RXSink>
 struct NetworkIO : boost::noncopyable
@@ -616,7 +594,7 @@ struct NetworkIO : boost::noncopyable
             socket_io.prewait(socket, 0);
 
             struct epoll_event evts[16];
-            int nready = epoll.wait(evts, sizeof(evts)/sizeof(*evts), 5);
+            int nready = epoll.wait(evts, sizeof(evts)/sizeof(*evts), 6);
             if (nready < 0) {
                 if (errno == EINTR)
                     continue;
@@ -661,7 +639,7 @@ struct NetworkIO : boost::noncopyable
                 if (len > (int)rb.size())
                     ERR_EXIT("%d %u", len, rb.size());
                 rb.consume(len);
-                DEBUG("consume %u", len);
+                //DEBUG("consume %u", len);
             } else
                 break;
         }
@@ -692,7 +670,7 @@ struct NetworkIO : boost::noncopyable
             ERR_EXIT_IF(sp.empty(),"%u %u", sp.size(), rb.size());
             int xlen = sp.size();
             int n = sk.recv(sp.begin(), xlen);//(, sa_peer_);
-            DEBUG("recv %u: %d", xlen, n);
+            DEBUG("%u: %d", xlen, n);
             ERR_EXIT_IF(n>xlen, "");
             if (n < 0) {
                 return error(sk, errno, __FUNCTION__);
@@ -710,7 +688,7 @@ struct NetworkIO : boost::noncopyable
         while (sk.ok(EPOLLOUT) && tx_p_) {
             int xlen = txq_iter_->end() - tx_p_;
             int n = sk.send(tx_p_, xlen);//(sa_peer_);
-            DEBUG("send %u: %d", xlen, n);
+            DEBUG("%u: %d", xlen, n);
             ERR_EXIT_IF(n>xlen, "");
             if (n < 0) {
                 return error(sk, errno, __FUNCTION__);
@@ -729,26 +707,26 @@ struct NetworkIO : boost::noncopyable
         }
     }
 
-    template <typename Sock> void l1recv(Sock& sk, struct sockaddr_in& sa) {
-        while (sk.ok(EPOLLIN)) {
-            Recvbuffer& rb = sk.xbuf();
-            typename Recvbuffer::range sp = rb.spaces();
-            ERR_EXIT_IF(sp.empty(),"%u %u", sp.size(), rb.size());
-            int n = sk.recv(sp.begin(), sp.size(), sa); // DEBUG("recv: %d", n);
-            if (n < 0) {
-                return error(sk, errno, __FUNCTION__);
-            }
-            if (n == 0) {
-                BOOST_ASSERT(!sk.ok(EPOLLIN));
-                break;
-            }
-            rb.commit(sp, n);
-            process_recvd(rb);
-        }
-    }
-    template <typename Sock> void l1send(Sock& sk, struct sockaddr_in& sa) {
-        ;
-    }
+    //template <typename Sock> void l1recv(Sock& sk, struct sockaddr_in& sa) {
+    //    while (sk.ok(EPOLLIN)) {
+    //        Recvbuffer& rb = sk.xbuf();
+    //        typename Recvbuffer::range sp = rb.spaces();
+    //        ERR_EXIT_IF(sp.empty(),"%u %u", sp.size(), rb.size());
+    //        int n = sk.recv(sp.begin(), sp.size(), sa); // DEBUG("recv: %d", n);
+    //        if (n < 0) {
+    //            return error(sk, errno, __FUNCTION__);
+    //        }
+    //        if (n == 0) {
+    //            BOOST_ASSERT(!sk.ok(EPOLLIN));
+    //            break;
+    //        }
+    //        rb.commit(sp, n);
+    //        process_recvd(rb);
+    //    }
+    //}
+    //template <typename Sock> void l1send(Sock& sk, struct sockaddr_in& sa) {
+    //    ;
+    //}
 
     // bridge //std::tuple<>
     template <typename Sock> void process_io(Sock& sk) { socket_io.process_io(sk); }
@@ -768,22 +746,23 @@ struct io_basic<void,Context,socket>
 {
     Context* context;
     typename Context::txqueue_type* txque_;
-    typename Context::txqueue_type::iterator txiter_;
-    char* xpos_;
+    typename Context::txqueue_type::iterator txbuf_;
+    char* txpos_;
     union { uint32_t u32; uint16_t u16[2]; } xh_;
 
-    time_t recvtime_;
+    time_t atime_;
 
     void l2close(socket& sk) {
         BOOST_ASSERT(sk.is_open());
         // context->l1close(sk);
         this->context->epoll.del(sk);
-        if (this->txiter_ != this->txque_->end()) {
-            this->txque_->done(this->txiter_);
-            this->txiter_ = this->txque_->end();
+        if (this->txbuf_ != this->txque_->end()) {
+            this->txque_->fail(this->txbuf_);
+            this->txbuf_ = this->txque_->end();
         }
-        sk.xbuf() = typename socket::xbuffer_type();
-        //sk.l2xdata() = EmptyStruct();
+        sk.xbuf() = typename socket::xbuffer_type{};
+        sk.xdata() = typename socket::xdata_type{};
+        sk.l2xdata() = typename socket::l2xdata_type{};
         sk.close();
     }
 
@@ -791,17 +770,27 @@ struct io_basic<void,Context,socket>
     {
         BOOST_ASSERT(sk.ok(EPOLLOUT));
 
-        boost::iterator_range<char*> const& data = *txiter_;
-        BOOST_ASSERT(!data.empty() && xpos_>=data.begin() && xpos_<data.end());
+        boost::iterator_range<char*> const& data = *txbuf_;
+        BOOST_ASSERT(!data.empty() && txpos_>=data.begin() && txpos_<data.end());
 
-        unsigned xlen = data.end() - xpos_;
+        unsigned xlen, datalen = data.end() - txpos_;
         struct iovec iov[2];
-        iov[1].iov_base = xpos_;
-        iov[1].iov_len = std::min( unsigned(MTU - sizeof(xh_)), xlen );
+        iov[1].iov_base = txpos_;
+        iov[1].iov_len = xlen = std::min( unsigned(MTU - sizeof(xh_)), datalen );
 
-        uint16_t head[2] = { xh_.u16[0], xh_.u16[1]++ };
-        if (iov[1].iov_len == xlen) {
-            head[1] |= 0x8000;
+        uint16_t head[2] = { xh_.u16[0]++, xh_.u16[1] };
+        if (xlen == datalen) {
+            ///TODO, test-only
+            struct PadInfo {
+                uint32_t u4, idx;
+                uint16_t ts[2];
+            } pinf; {
+                memcpy(&pinf, data.end()-sizeof(pinf), sizeof(pinf));
+                DEBUG("lastp %04d.%03d %u, %hd %u, %u", pinf.ts[0],pinf.ts[1], pinf.idx, head[0], xlen, data.size());
+            }
+            ///
+
+            head[0] |= 0x8000;
         }
         head[0] = htons(head[0]); head[1] = htons(head[1]);
         iov[0].iov_base = (void*)&head;
@@ -814,24 +803,27 @@ struct io_basic<void,Context,socket>
             return;
         }
         if (slen < int(sizeof(head)+xlen)) {
-            LOGE("size %u", sizeof(head)+xlen);
+            LOGE("size %u: %d", sizeof(head)+xlen, slen);
             l2close(sk);
             return;
         }
-        xpos_ += xlen; //slen - sizeof(head);
-        if (xpos_ == data.end()) {
-            xpos_ = 0;
-            this->txque_->done(this->txiter_);
-            this->txiter_ = this->txque_->end();
+        txpos_ += xlen; //slen - sizeof(head);
+        if (txpos_ == data.end()) {
+            txpos_ = 0;
+            this->txque_->done(this->txbuf_);
+            this->txbuf_ = this->txque_->end();
         }
     }
 
-    void l2recv(socket& sk)
+    void l2recv(socket& sk) {
+        while (l2recv_one(sk))
+            ;
+    }
+    int l2recv_one(socket& sk)
     {
         typename socket::xbuffer_type& xbuf = sk.xbuf();
         typename socket::xbuffer_type::range sp = xbuf.spaces();
         uint16_t head[2] = { 0, 0 };
-
         struct iovec iov[2];
         iov[0].iov_base = (void*)&head;
         iov[0].iov_len = sizeof(head);
@@ -842,39 +834,57 @@ struct io_basic<void,Context,socket>
         if (rlen < 0) {
             LOGE("%s", strerror(errno));
             l2close(sk);
-            return;
+            return 0;
         }
         if (rlen == 0) {
-            LOGV("recvd==0");
-            return;
+            //LOGV("recvd==0");
+            return 0;
         }
         if (rlen < (int)sizeof(head)) {
             LOGE("rlen %u", rlen);
             l2close(sk);
-            return;
+            return 0;
         }
-        if (head[1] == 0xffff) {
+        if (head[0] == 0xffff) {
+            DEBUG("recv 0x %x %x", head[0],head[1]);
             if (rlen > 8) {
                 LOGE("%d",rlen);
                 l2close(sk);
+                return 0;
             }
-            return;
+            return 1;
         }
-        head[0] = ntohs(head[0]); head[1] = ntohs(head[1]);
 
-        if ((head[1] & 0x7fff) == xh_.u16[1]) {
+        head[0] = ntohs(head[0]); head[1] = ntohs(head[1]);
+        rlen -= sizeof(head);
+        xbuf.commit(sp, rlen);
+
+        if ((head[0] & 0x7fff) == xh_.u16[1]) {
+Pos_incr_recv__:
             xh_.u16[1]++;
-            xbuf.commit(sp, rlen - sizeof(head));
-            if (head[1] & 0x8000) {
+            if (head[0] & 0x8000) {
+                ///TODO, test-only
+                struct PadInfo {
+                    uint32_t u4, idx;
+                    uint16_t ts[2];
+                } pinf; {
+                    memcpy(&pinf, xbuf.end()-sizeof(pinf), sizeof(pinf));
+                    DEBUG("lastp %04d.%03d %u, %hd %u, %u", pinf.ts[0],pinf.ts[1], pinf.idx, (head[0]&0x7fff), rlen, xbuf.size());
+                }
+                ///End
                 xh_.u16[1] = 0; //xh_.u16[0] ++; //= head[0];
                 context->process_recvd(xbuf); //TODO
             }
         } else /*if (xh_.u16[1] != 0xffff)*/ {
-            LOGE("*NOT* expeted %x %#04x, %x", xh_.u16[1], head[1], head[0]);
-            if (!xbuf.empty())
-                xbuf.consume(xbuf.size());
+            //LOGE("*NOT* expeted %x %#04x, %x", xh_.u16[1], head[0], head[1]);
             xh_.u16[1] = 0; //0xffff;
+            if ((head[0] & 0x7fff) == 0) {
+                xbuf.consume(xbuf.size() - rlen);
+                goto Pos_incr_recv__;
+            }
+            xbuf.consume(xbuf.size());
         }
+        return 1;
     }
 
     //void process_recvd(XBuffer& xbuf) {
@@ -896,12 +906,13 @@ struct io_basic<void,Context,socket>
 
     void process_io(socket& sk) {
         if (sk.ok(EPOLLIN)) {
-            recvtime_ = time(0);
             l2recv(sk);
+            atime_ = time(0);
         }
         if (sk.ok(EPOLLOUT)) {
-            if (this->txiter_ != this->txque_->end()) {
+            if (this->txbuf_ != this->txque_->end()) {
                 l2send(sk);
+                atime_ = time(0);
             }
         }
     }
@@ -911,26 +922,26 @@ struct io_basic<void,Context,socket>
             return;
         bool sent = 0;
         while (sk.ok(EPOLLOUT)) {
-            if (this->txiter_ == this->txque_->end()) {
-                this->txiter_ = this->txque_->wait(millis);
-                if (this->txiter_ == this->txque_->end()) {
+            if (this->txbuf_ == this->txque_->end()) {
+                this->txbuf_ = this->txque_->wait(millis);
+                if (this->txbuf_ == this->txque_->end()) {
                     break;
                 } else {
-                    xpos_ = this->txiter_->begin();
-                    xh_.u16[0]++;
-                    xh_.u16[1] = 0;
+                    txpos_ = this->txbuf_->begin();
+                    xh_.u16[0] = 0; //++; //xh_.u16[1] = 0;
                 }
             } else {
                 l2send(sk);
                 sent = 1;
+                atime_ = time(0);
             }
         }
         if (!sent) {
-            time_t t = time(0);
-            if (t - recvtime_ > 3) {
+            if (time(0) - atime_ > 4) {
                 uint32_t u= 0xffffffff;
                 sk.send((char*)&u,sizeof(u));
-                recvtime_ = t;
+                atime_ = time(0);
+                DEBUG("send 0xffffffff");
             }
         }
     }
@@ -939,12 +950,12 @@ struct io_basic<void,Context,socket>
 
     io_basic(Context& c) {
         this->context = &c;
-        this->recvtime_ = 0; // sk.send("",0);
+        this->atime_ = 0; //this->recvtime_ = 0; // sk.send("",0);
 
         this->xh_.u32 = 0;
-        this->xpos_ = 0;
         this->txque_ = &this->context->txqueue;
-        this->txiter_ = this->txque_->end();
+        this->txbuf_ = this->txque_->end();
+        this->txpos_ = 0;
     }
 };
 
@@ -954,8 +965,8 @@ struct io_basic<client,Context,socket> : io_basic<void,Context,socket>
     io_basic(Context& c, socket& sk, char const*ip, int port)
         : io_basic<void,Context,socket>(c)
     {
-        sk.open();
         sk.l2xdata() = sk.make_sa(ip,port); //sk.connect(ip, port);
+        sk.open();
         sk.nonblocking();
         this->context->epoll.add(sk, EPOLLOUT|EPOLLIN);
         DEBUG("epoll.add %d %s:%d udp:client", sk.fd(), ip, port);
@@ -968,6 +979,8 @@ struct io_basic<server,Context,socket> : io_basic<void,Context,socket>
     io_basic(Context& c, socket& sk, char const*ip, int port)
         : io_basic<void,Context,socket>(c)
     {
+        sk.l2xdata() = sockaddr_in{};
+        BOOST_ASSERT(sk.l2xdata().sin_port == 0);
         sk.open();
         sk.bind(ip, port);
         sk.nonblocking();
