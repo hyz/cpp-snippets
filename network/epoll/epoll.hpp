@@ -748,6 +748,7 @@ struct io_basic<void,Context,socket>
     typename Context::txqueue_type* txque_;
     typename Context::txqueue_type::iterator txbuf_;
     char* txpos_;
+    unsigned txbytes_;
     union { uint32_t u32; uint16_t u16[2]; } xh_;
 
     time_t atime_;
@@ -808,6 +809,7 @@ struct io_basic<void,Context,socket>
             return;
         }
         txpos_ += xlen; //slen - sizeof(head);
+        txbytes_ += xlen;
         if (txpos_ == data.end()) {
             txpos_ = 0;
             this->txque_->done(this->txbuf_);
@@ -956,6 +958,7 @@ Pos_incr_recv__:
         this->txque_ = &this->context->txqueue;
         this->txbuf_ = this->txque_->end();
         this->txpos_ = 0;
+        this->txbytes_ = 0;
     }
 };
 

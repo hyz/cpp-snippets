@@ -154,7 +154,7 @@ struct ClientMain : boost::noncopyable
 
     FILE* ofp_;
     ClientMain(char const* ip) : nwk(bufq, *this, ip, Port), thread(*this, "ClientMain") {
-        ofp_ = 0;
+        ofp_ = fopen("o.h264", "wb");
     }
 
     void run() {
