@@ -4,18 +4,12 @@
 // Copyright (c) 2013. SHENZHEN HUAZHEN Electronics Co.Ltd. All rights reserved.
 //
 #include <errno.h>
-#include <android/log.h>
 #if 0 //ndef BUILD_RELEASE
 #  include <opencv/highgui.h>
 #  include <opencv/cv.h>
 #endif
 #include "VideoRender.h"
-
-// #include "Utils/log.h"
-#define LOG_TAG    "HGSR"
-#define LOGD(...)  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGV(...)  __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
-#define LOGE(...)  __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#include "alog.hpp"
 
 VideoRender::VideoRender()
 : mWindow(0)
@@ -56,7 +50,7 @@ VideoRender::VideoRender()
 		mCardWidth  = mCardImage.width / CARDS_PER_ROW;
 		mCardHeight = mCardImage.height/ CARDS_PER_COL;
 
-		//LOGI("Card %dx%d=>%dx%d\n",mCardImage.width,mCardImage.height,mCardWidth,mCardHeight);
+		//LOGV("Card %dx%d=>%dx%d\n",mCardImage.width,mCardImage.height,mCardWidth,mCardHeight);
 	}
 	else
 		LOGE("Card res not found %s\n", CARDS_RES_FILE);
@@ -83,7 +77,7 @@ int VideoRender::setWindow(ANativeWindow* window)
 
 	if(mWindow!=0)
 	{
-		ANativeWindow_Buffer buffer;
+		//ANativeWindow_Buffer buffer;
 
 		/*if(ANativeWindow_lock(mWindow, &buffer, NULL)==0)
 		{
@@ -165,7 +159,7 @@ int VideoRender::renderFrame(Image* p, bool otherThread)
 		if(dsth>srch)minh = p->height;
 		else minh = dsth*4/3;
 
-		//LOGI("3/4 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
+		//LOGV("3/4 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
 		renderto4of3RGBX((void*)psrc, p->stride, (void*)pdst, buffer.stride*4, minw, minh);
 	}
 	break;
@@ -188,7 +182,7 @@ int VideoRender::renderFrame(Image* p, bool otherThread)
 		if(dsth>srch) minh = p->height;
 		else minh = dsth*3;
 
-		//LOGI("1/3 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
+		//LOGV("1/3 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
 		renderto3of1RGBX((void*)psrc, p->stride, (void*)pdst, buffer.stride*4, minw, minh);
 	}
 	break;
@@ -211,7 +205,7 @@ int VideoRender::renderFrame(Image* p, bool otherThread)
 		if(dsth>srch) minh = p->height;
 		else minh = dsth*2;
 
-		//LOGI("1/3 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
+		//LOGV("1/3 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
 		renderto2of1RGBX((void*)psrc, p->stride, (void*)pdst, buffer.stride*4, minw, minh);
 	}
     break;
@@ -234,7 +228,7 @@ int VideoRender::renderFrame(Image* p, bool otherThread)
 		if(dsth>srch) minh = p->height;
 		else minh = dsth;
 
-		//LOGI("1/1 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
+		//LOGV("1/1 %dx%d : %dx%d => %dx%d offset %d\n",p->width, p->height, buffer.width, buffer.height, minw, minh, offset);
 		renderGraytoRGBX((void*)psrc, p->stride, (void*)pdst, buffer.stride*4, minw, minh);
 		if(buffer.height>p->height)
 		{
@@ -534,13 +528,13 @@ int VideoRenderGL::renderFrame(Image* p, bool otherThread)
 
 	if(otherThread && p)
 	{
-		//LOGI("*********copy frame****************\n");
+		//LOGV("*********copy frame****************\n");
 		return copyToLocalImg(p);
 	}
 
 	pthread_mutex_lock(&mMutex);
 
-	//LOGI("is init %d window 0x%x change %d\n", mIsGLInit, mWindow, mIsWndChange);
+	//LOGV("is init %d window 0x%x change %d\n", mIsGLInit, mWindow, mIsWndChange);
 
 	if(mIsGLInit && mIsWndChange)
 	{
@@ -632,7 +626,7 @@ int VideoRenderGL::initGL()
 	EGLint height;
 	GLfloat ratio;
 
-	LOGI("****Initializing OpenGL context*****");
+	LOGV("****Initializing OpenGL context*****");
 
 	if ((display = eglGetDisplay(EGL_DEFAULT_DISPLAY)) == EGL_NO_DISPLAY) {
 	    LOGE("eglGetDisplay() returned error %d", eglGetError());
@@ -944,7 +938,7 @@ int ShaderUnit::init()
 	//printGLString("Renderer", GL_RENDERER);
 	//printGLString("Extensions", GL_EXTENSIONS);
 
-	LOGI("setupShaderUnit");
+	LOGV("setupShaderUnit");
 	mProgram = createProgram(mvShaderString, mfShaderString);
 	if (!mProgram) {
 		LOGE("Could not create program.");
@@ -953,19 +947,19 @@ int ShaderUnit::init()
 
 	mvPoshandle = glGetAttribLocation(mProgram, "position");
 	checkGlError("glGetAttribLocation");
-	LOGI("glGetAttribLocation(\"position\") = %d\n",mvPoshandle);
+	LOGV("glGetAttribLocation(\"position\") = %d\n",mvPoshandle);
 
 	mvTexcoord = glGetAttribLocation(mProgram, "inTexCoord");
 	checkGlError("glGetAttribLocation");
-	LOGI("glGetAttribLocation(\"inTexCoord\") = %d\n",mvTexcoord);
+	LOGV("glGetAttribLocation(\"inTexCoord\") = %d\n",mvTexcoord);
 
 	muTexid = glGetUniformLocation(mProgram, "texY");
 	checkGlError("glGetUniformLocation");
-	LOGI("glGetUniformLocation %d\n",muTexid);
+	LOGV("glGetUniformLocation %d\n",muTexid);
 
 	glGenTextures(1, &mTexture);
 	checkGlError("glGenTextures");
-	LOGI("glGenTextures %d\n", mTexture);
+	LOGV("glGenTextures %d\n", mTexture);
 
 	return 0;
 }
@@ -997,14 +991,14 @@ void ShaderUnit::setTexParameter(GLint filter, GLint warp)
 void ShaderUnit::printGLString(const char *name, GLenum s)
 {
    const char *v = (const char *) glGetString(s);
-   LOGI("GL %s = %s\n", name, v);
+   LOGV("GL %s = %s\n", name, v);
 }
 
 void ShaderUnit::checkGlError(const char* op)
 {
     for (GLint error = glGetError(); error; error
             = glGetError()) {
-        LOGI("after %s() glError (0x%x)\n", op, error);
+        LOGV("after %s() glError (0x%x)\n", op, error);
     }
 }
 
@@ -1058,7 +1052,7 @@ GLuint ShaderUnit::createProgram(const char* pVertexSource, const char* pFragmen
         GLint linkStatus = GL_FALSE;
         glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
 
-        LOGI("link Status %d\n", linkStatus);
+        LOGV("link Status %d\n", linkStatus);
 
         if (linkStatus != GL_TRUE) {
             GLint bufLength = 0;

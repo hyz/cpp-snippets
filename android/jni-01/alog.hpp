@@ -1,34 +1,98 @@
 #ifndef ALOG_HPP__
 #define ALOG_HPP__
 
-#include <android/log.h>
-
-#ifndef LOG_TAG
-#   define LOG_TAG
-#endif
-
-template <typename... As> void logfn_( int ln, char const* e, char const* c, char const* ltag
-        , FILE* fp, char const* fmt, As... a) {
-#ifdef ALOG_CONSOLE
-    fprintf(fp, fmt, ltag, ln, e, c, a... );
-    fputs("\n", fp);
+#if defined(__ANDROID__) && !defined(ALOG_CONSOLE)
+# include <android/log.h>
+  enum { LOG_ERROR = ANDROID_LOG_ERROR };
+  enum { LOG_WARN = ANDROID_LOG_WARN };
+  enum { LOG_DEBUG = ANDROID_LOG_DEBUG };
+  enum { LOG_VERBO = ANDROID_LOG_VERBOSE };
 #else
-    __android_log_print(stderr==fp ? ANDROID_LOG_ERROR : ANDROID_LOG_DEBUG
-            , ltag+2, fmt, "", ln, e, c, a...);
+# if !defined(ALOG_CONSOLE)
+#   define ALOG_CONSOLE
+# endif
+# include <stdlib.h>
+# include <string.h> // basename(__FILE__);
+  enum { LOG_ERROR = 4 };
+  enum { LOG_WARN  = 3 };
+  enum { LOG_VERBO = 2 };
+  enum { LOG_DEBUG = 1 };
 #endif
+# include <stdio.h>
+
+//#if defined(__GCC__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 4)
+//#endif
+
+//#ifndef LOG_TAG
+//#   define LOG_TAG
+//#endif
+
+template <int V=0>
+struct logsettings {
+    static FILE* fp;
+};
+template <int V> FILE* logsettings<V>::fp = stderr;
+
+template <typename... As> int logfn_(int lev, char const*fname, int ln, char const*func, char const* c
+        , char const* fmt, As... a)
+{
+    char tag[64]; {
+        char const *src = strrchr(fname, '/');
+        if (src)
+            ++src;
+        else
+            src = fname;
+        char *p = tag+2, *end = tag+(64-2);
+        while (p < end && (*p = *src) && *src != '.') {
+            ++src; ++p;
+        }
+        *p++ = ' ';
+        *p = '\0';
+    }
+#ifdef ALOG_CONSOLE
+    //switch (lev) {
+    //    case LOG_DEBUG: lev=1 ; break;
+    //    case LOG_WARN : lev=2 ; break;
+    //    case LOG_ERROR: lev=3 ; break;
+    //    default: lev=0 ; break;
+    //}
+    static char levs[] = { 'X','D','V','W','E' };
+    tag[0] = levs[lev]; //((fp == stderr) ? 'E' : 'D');
+    tag[1] = '/';
+    fprintf(logsettings<>::fp, fmt, tag, ln, func, c, a... );
+    fputs("\n", logsettings<>::fp);
+    //if (lev >= LOG_WARN) { fflush(logsettings<>::fp); }
+#else
+    __android_log_print(lev, tag+2, fmt, "", ln, func, c, a...);
+#endif
+    return 127;
 }
-template <typename... A> void err_exit_(A... a) {
-    logfn_(a...);
-    exit(127);
-}
+//template <typename... A> void err_exit_(A... a) {
+//    logfn_(a...);
+//    exit(127);
+//}
 #undef  LOGE
+#undef  LOGW
 #undef  LOGD
-#define LOGD(...)           logfn_(__LINE__,__FUNCTION__," ", "D/" LOG_TAG, stdout, "%s %d:%s%s" __VA_ARGS__)
-#define LOGE(...)           logfn_(__LINE__,__FUNCTION__," ", "E/" LOG_TAG, stderr, "%s %d:%s%s" __VA_ARGS__)
-#define ERR_MSG(...)        logfn_(__LINE__,__FUNCTION__," ", "E/" LOG_TAG, stderr, "%s %d:%s%s" __VA_ARGS__)
-#define ERR_EXIT(...)    err_exit_(__LINE__,__FUNCTION__," ", "E/" LOG_TAG, stderr, "%s %d:%s%s" __VA_ARGS__)
-#define ERR_MSG_IF(e, ...)  if(e)   logfn_(__LINE__,__FUNCTION__, "(" #e ") ", "E/" LOG_TAG, stderr,"%s %d:%s%s" __VA_ARGS__)
-#define ERR_EXIT_IF(e, ...) if(e)err_exit_(__LINE__,__FUNCTION__, "(" #e ") ", "E/" LOG_TAG, stderr,"%s %d:%s%s" __VA_ARGS__)
+#undef  LOGV
+#define LOGV(...)           logfn_(LOG_VERBO,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
+#define DEBUG(...)          logfn_(LOG_DEBUG,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
+#define LOGD(...)           logfn_(LOG_DEBUG,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
+#define LOGW(...)           logfn_(LOG_WARN ,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
+#define LOGE(...)           logfn_(LOG_ERROR,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__)
+#define ERR_EXIT(...)  exit(logfn_(LOG_ERROR,__FILE__,__LINE__,__FUNCTION__,"", "%s%d:%s%s " __VA_ARGS__))
+#define ERR_EXIT_IF(e, ...) if(e)exit(logfn_(LOG_ERROR,__FILE__,__LINE__,__FUNCTION__, ":[" #e "]","%s%d:%s%s " __VA_ARGS__))
+#define LOGE_IF(e, ...)     if(e)     logfn_(LOG_ERROR,__FILE__,__LINE__,__FUNCTION__, ":[" #e "]","%s%d:%s%s " __VA_ARGS__)
+#define LOGW_IF(e, ...)     if(e)     logfn_(LOG_WARN ,__FILE__,__LINE__,__FUNCTION__, ":[" #e "]","%s%d:%s%s " __VA_ARGS__)
+#define LOGD_IF(e, ...)     if(e)     logfn_(LOG_DEBUG,__FILE__,__LINE__,__FUNCTION__, ":[" #e "]","%s%d:%s%s " __VA_ARGS__)
+
+#if 0 //defined(NDEBUG)
+# warning "NDEBUG"
+# undef DEBUG
+# undef LOGD
+# define DEBUG(...) ((void)0)
+# define LOGD(...) ((void)0)
+#endif
 
 inline char const* abi_str()
 {

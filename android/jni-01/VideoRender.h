@@ -7,17 +7,43 @@
 #ifndef RENDER_H_
 #define RENDER_H_
 
+#include <stdint.h>
 #include <pthread.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <EGL/egl.h>
 #include <GLES/gl.h>
-#include <android/native_window.h>
-#include "Include/Global.h"
+//#include <android/native_window.h>
+//#include "Include/Global.h"
 
 #define  CARDS_PER_ROW       13
 #define  CARDS_PER_COL       5
 #define  CARDS_RES_FILE      "/data/data/com.huazhen.barcode/raw/poker.png"
+
+enum { IMAGEFORMATE_RGBA_8888 =1 };
+enum { WINDOW_FORMAT_RGBA_8888=1 };
+enum { WINDOW_FORMAT_RGBX_8888=1 };
+enum { MAX_RESULT_CARDS = 1 };
+enum { MAX_CARDS_TYPE =1 };
+
+#define ANativeWindow EGLNativeWindowType
+
+struct ANativeWindow_Buffer {
+    int format;
+    void* bits;
+    unsigned width, height, stride;
+};
+
+void ANativeWindow_release(ANativeWindow*);
+int ANativeWindow_lock(ANativeWindow* mWindow, ANativeWindow_Buffer*, void*);
+int ANativeWindow_unlockAndPost(ANativeWindow* mWindow);
+
+struct Image {
+    uint8_t *porg, *pdata;
+    unsigned short width, height, stride;
+    unsigned short format, flags;
+    unsigned size;
+};
 
 enum ScaleType
 {
